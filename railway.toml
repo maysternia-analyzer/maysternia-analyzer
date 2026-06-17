@@ -3,6 +3,6 @@ builder = "nixpacks"
 nixpacksPlan = "nixpacks.toml"
 
 [deploy]
-startCommand = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+startCommand = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 4 --timeout 600"
 healthcheckPath = "/login"
 restartPolicyType = "on_failure"

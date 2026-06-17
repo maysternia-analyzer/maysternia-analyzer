@@ -6,6 +6,7 @@ import requests
 from pathlib import Path
 
 UPLOAD_FOLDER = Path(__file__).parent.parent / "uploads"
+UPLOAD_FOLDER.mkdir(exist_ok=True)
 
 
 def get_access_token() -> str:
