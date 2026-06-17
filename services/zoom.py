@@ -26,20 +26,47 @@ def verify_webhook_signature(request_body: bytes, timestamp: str, signature: str
     return hmac.compare_digest(expected, signature)
 
 
+def _get_fresh_download_url(zoom_file_id: str, token: str) -> str | None:
+    """Look up fresh /rec/download/ URL from Zoom API by file ID."""
+    from datetime import datetime, timedelta
+    date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    meetings = requests.get(
+        "https://api.zoom.us/v2/users/me/recordings",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"page_size": 100, "from": date_from},
+        timeout=15,
+    ).json().get("meetings", [])
+    for m in meetings:
+        for f in m.get("recording_files", []):
+            if str(f.get("id")) == zoom_file_id:
+                return f.get("download_url")
+    return None
+
+
 def download_recording(download_url: str, filename: str) -> str:
     save_path = UPLOAD_FOLDER / filename
-
     token = get_access_token()
 
-    # Method 1: Bearer header (primary method for API and webhook URLs)
+    def _bad_resp(r):
+        return r.status_code == 401 or "text/html" in r.headers.get("content-type", "")
+
+    # If webhook_download URL — get fresh API URL instead (more reliable)
+    if "webhook_download" in download_url:
+        zoom_file_id = filename.replace("zoom_", "").rsplit(".", 1)[0]
+        fresh_url = _get_fresh_download_url(zoom_file_id, token)
+        if fresh_url:
+            print(f"[Download] Використовуємо API URL замість webhook URL", flush=True)
+            download_url = fresh_url
+
+    # Download with Bearer token
     resp = requests.get(
         download_url,
         headers={"Authorization": f"Bearer {token}"},
         stream=True, timeout=300, allow_redirects=True,
     )
 
-    # Method 2: token as query param
-    if resp.status_code == 401 or "text/html" in resp.headers.get("content-type", ""):
+    # Fallback: token as query param
+    if _bad_resp(resp):
         from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
         parsed = urlparse(download_url)
         params = parse_qs(parsed.query)
