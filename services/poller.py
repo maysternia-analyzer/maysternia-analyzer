@@ -24,13 +24,12 @@ def _get_token():
 
 def poll_once():
     """Check Zoom for new recordings not yet in DB. Returns count of new ones."""
-    from database import get_all_records, create_record, update_record, get_record
+    from database import create_record, update_record, is_zoom_file_processed, mark_zoom_file_processed
     from services.zoom import download_recording
     from services.transcription import transcribe
     from services.analysis import analyze
     from services.detection import detect_type_and_name
 
-    existing = {r["filename"] for r in get_all_records()}
     token = _get_token()
 
     date_from = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -46,8 +45,10 @@ def poll_once():
         for f in m.get("recording_files", []):
             if f["file_type"] not in ("MP4", "M4A"):
                 continue
-            filename = f"zoom_{f['id']}.mp4"
-            if filename in existing:
+            file_id = str(f["id"])
+            filename = f"zoom_{file_id}.mp4"
+            # Skip if already processed (persisted — survives record deletion)
+            if is_zoom_file_processed(file_id):
                 continue
 
             print(f"[Poller] Новий запис: {m['topic']} | {m['start_time'][:10]}")
@@ -71,18 +72,19 @@ def poll_once():
                     m["topic"], m["duration"], is_breakout,
                     m.get("host_email", "").split("@")[0], text[:2000],
                 )
-                import sqlite3 as _sq
-                from database import get_db
+                from database import get_db, _p
                 conn = get_db()
-                conn.execute("UPDATE records SET record_type=?, person_name=? WHERE id=?",
-                             (det["record_type"], det["person_name"], record_id))
-                conn.commit(); conn.close()
+                cur = conn.cursor()
+                p = _p()
+                cur.execute(f"UPDATE records SET record_type={p}, person_name={p} WHERE id={p}",
+                            (det["record_type"], det["person_name"], record_id))
+                conn.commit(); cur.close(); conn.close()
 
                 analysis = analyze(det["record_type"], text)
                 update_record(record_id, analysis_json=analysis, status="done")
                 print(f"[Poller] ✅ ID:{record_id} | {det['record_type']} | {det['person_name']}")
+                mark_zoom_file_processed(file_id)
                 new_count += 1
-                existing.add(filename)
             except Exception as e:
                 print(f"[Poller] ❌ Помилка: {e}")
                 update_record(record_id,

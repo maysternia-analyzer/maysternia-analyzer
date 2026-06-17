@@ -85,6 +85,12 @@ def init_db():
                 data_json TEXT NOT NULL
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS zoom_processed (
+                zoom_file_id TEXT PRIMARY KEY,
+                processed_at TEXT NOT NULL
+            )
+        """)
     else:
         cur.executescript("""
             CREATE TABLE IF NOT EXISTS records (
@@ -115,6 +121,10 @@ def init_db():
                 date_from TEXT DEFAULT '',
                 date_to TEXT DEFAULT '',
                 data_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS zoom_processed (
+                zoom_file_id TEXT PRIMARY KEY,
+                processed_at TEXT NOT NULL
             );
         """)
         for col, definition in [
@@ -387,3 +397,30 @@ def get_person_names(record_type=None):
     cur.close()
     conn.close()
     return [r[0] for r in rows]
+
+
+def is_zoom_file_processed(zoom_file_id: str) -> bool:
+    conn = get_db()
+    cur = conn.cursor()
+    p = _p()
+    cur.execute(f"SELECT 1 FROM zoom_processed WHERE zoom_file_id={p}", (zoom_file_id,))
+    exists = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return exists
+
+
+def mark_zoom_file_processed(zoom_file_id: str):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"INSERT INTO zoom_processed (zoom_file_id, processed_at) VALUES ({_ph(2)})",
+            (zoom_file_id, datetime.now().isoformat())
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()

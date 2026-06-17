@@ -15,7 +15,8 @@ load_dotenv()
 from database import (init_db, create_record, update_record, update_comment, get_record,
                       get_all_records, get_person_names, update_sale_result, get_insights,
                       save_insights, get_user_by_email, get_user_by_id, get_all_users,
-                      create_user, update_user, delete_user)
+                      create_user, update_user, delete_user,
+                      is_zoom_file_processed, mark_zoom_file_processed)
 from services.transcription import transcribe
 from services.analysis import analyze
 from services.zoom import verify_webhook_signature, download_recording, parse_webhook_payload
@@ -500,10 +501,10 @@ def zoom_webhook():
     recordings = parse_webhook_payload(data)
     print(f"[Zoom] Знайдено файлів для обробки: {len(recordings)}")
 
-    existing_filenames = {r["filename"] for r in get_all_records()}
     started = 0
     for rec in recordings:
-        if rec["filename"] in existing_filenames:
+        file_id = rec["filename"].replace("zoom_", "").rsplit(".", 1)[0]
+        if is_zoom_file_processed(file_id):
             print(f"[Zoom] Пропускаємо дублікат: {rec['filename']}")
             continue
         print(f"[Zoom] Запускаємо: {rec['topic']} | {rec['filename']} | breakout={rec['is_breakout']}")
@@ -525,6 +526,9 @@ def _process_zoom_recording(rec: dict):
         st[:10], "sales", rec.get("host_name", "Невідомо"), rec["filename"], record_time=record_time
     )
     update_record(record_id, status="processing")
+    # Mark as processed immediately to prevent duplicates from poller
+    file_id = rec["filename"].replace("zoom_", "").rsplit(".", 1)[0]
+    mark_zoom_file_processed(file_id)
     print(f"[Zoom] Створено запис ID:{record_id} | {rec['topic']}")
 
     try:
