@@ -507,6 +507,8 @@ def zoom_webhook():
         if is_zoom_file_processed(file_id):
             print(f"[Zoom] Пропускаємо дублікат: {rec['filename']}")
             continue
+        # Mark BEFORE starting thread to prevent race condition with poller
+        mark_zoom_file_processed(file_id)
         print(f"[Zoom] Запускаємо: {rec['topic']} | {rec['filename']} | breakout={rec['is_breakout']}")
         thread = threading.Thread(
             target=_process_zoom_recording, args=(rec,), daemon=True
@@ -526,9 +528,6 @@ def _process_zoom_recording(rec: dict):
         st[:10], "sales", rec.get("host_name", "Невідомо"), rec["filename"], record_time=record_time
     )
     update_record(record_id, status="processing")
-    # Mark as processed immediately to prevent duplicates from poller
-    file_id = rec["filename"].replace("zoom_", "").rsplit(".", 1)[0]
-    mark_zoom_file_processed(file_id)
     print(f"[Zoom] Створено запис ID:{record_id} | {rec['topic']}")
 
     try:

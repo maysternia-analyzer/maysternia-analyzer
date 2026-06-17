@@ -42,14 +42,25 @@ def poll_once():
 
     new_count = 0
     for m in meetings:
-        for f in m.get("recording_files", []):
-            if f["file_type"] not in ("MP4", "M4A"):
-                continue
-            file_id = str(f["id"])
-            filename = f"zoom_{file_id}.mp4"
-            # Skip if already processed (persisted — survives record deletion)
-            if is_zoom_file_processed(file_id):
-                continue
+        # Pick best file per meeting: active_speaker MP4 > first MP4 > M4A
+        files = [f for f in m.get("recording_files", [])
+                 if f["file_type"] in ("MP4", "M4A") and f.get("status") == "completed"]
+        best = None
+        for f in files:
+            if f["file_type"] == "MP4" and "active_speaker" in f.get("recording_type", "").lower():
+                best = f; break
+        if not best:
+            best = next((f for f in files if f["file_type"] == "MP4"), None)
+        if not best:
+            best = next((f for f in files), None)
+        if not best:
+            continue
+
+        f = best
+        file_id = str(f["id"])
+        filename = f"zoom_{file_id}.mp4"
+        if is_zoom_file_processed(file_id):
+            continue
 
             print(f"[Poller] Новий запис: {m['topic']} | {m['start_time'][:10]}")
             start_dt = m["start_time"]
