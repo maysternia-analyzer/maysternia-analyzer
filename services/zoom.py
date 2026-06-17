@@ -29,35 +29,46 @@ def verify_webhook_signature(request_body: bytes, timestamp: str, signature: str
 def download_recording(download_url: str, filename: str) -> str:
     save_path = UPLOAD_FOLDER / filename
 
-    # Method 1: URL as-is — Zoom API URLs already contain a valid access_token
-    resp = requests.get(download_url, stream=True, timeout=300, allow_redirects=True)
+    token = get_access_token()
 
-    # Method 2: fresh Bearer token (for webhook_download URLs where token may differ)
-    if resp.status_code == 401:
-        token = get_access_token()
-        resp = requests.get(
-            download_url,
-            headers={"Authorization": f"Bearer {token}"},
-            stream=True, timeout=300, allow_redirects=True,
-        )
+    # Method 1: Bearer header (primary method for API and webhook URLs)
+    resp = requests.get(
+        download_url,
+        headers={"Authorization": f"Bearer {token}"},
+        stream=True, timeout=300, allow_redirects=True,
+    )
 
-    # Method 3: fresh token as query param
-    if resp.status_code == 401:
+    # Method 2: token as query param
+    if resp.status_code == 401 or "text/html" in resp.headers.get("content-type", ""):
         from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
-        token = get_access_token()
         parsed = urlparse(download_url)
         params = parse_qs(parsed.query)
         params.pop("access_token", None)
         clean_url = urlunparse(parsed._replace(query=urlencode({k: v[0] for k, v in params.items()})))
         url_with_token = f"{clean_url}{'&' if '?' in clean_url else '?'}access_token={token}"
-        resp = requests.get(url_with_token, stream=True, timeout=300, allow_redirects=True)
+        resp = requests.get(
+            url_with_token,
+            headers={"Authorization": f"Bearer {token}"},
+            stream=True, timeout=300, allow_redirects=True,
+        )
 
     resp.raise_for_status()
+
+    content_type = resp.headers.get("content-type", "")
+    if "text/html" in content_type or "text/xml" in content_type:
+        raise RuntimeError(f"Zoom повернув HTML замість відео (можливо, посилання застаріло). Content-Type: {content_type}")
 
     with open(save_path, "wb") as f:
         for chunk in resp.iter_content(chunk_size=65536):
             if chunk:
                 f.write(chunk)
+
+    size = save_path.stat().st_size
+    if size < 10000:
+        save_path.unlink(missing_ok=True)
+        raise RuntimeError(f"Файл завантажився порожнім ({size} байт) — посилання застаріло")
+
+    print(f"[Download] Збережено: {save_path.name} | {size/1024/1024:.1f} MB", flush=True)
     return str(save_path)
 
 
