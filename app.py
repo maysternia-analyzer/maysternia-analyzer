@@ -393,15 +393,32 @@ def delete_record(record_id):
 @login_required
 def reanalyze(record_id):
     record = get_record(record_id)
-    if not record or not record.get("transcription"):
+    if not record:
         abort(400)
-    update_record(record_id, status="analyzing")
-    thread = threading.Thread(
-        target=lambda: _reanalyze(record_id, record["transcription"], record["record_type"]),
-        daemon=True,
-    )
-    thread.start()
-    return jsonify({"ok": True})
+
+    transcription = record.get("transcription", "")
+    has_error = not transcription or transcription.startswith("[ПОМИЛКА")
+
+    if has_error:
+        # Re-download from Zoom and reprocess
+        filename = record.get("filename", "")
+        if filename and filename.startswith("zoom_"):
+            update_record(record_id, status="processing")
+            thread = threading.Thread(
+                target=_redownload_and_process, args=(record_id, filename),
+                daemon=True,
+            )
+            thread.start()
+            return jsonify({"ok": True, "action": "redownload"})
+        abort(400)
+    else:
+        update_record(record_id, status="analyzing")
+        thread = threading.Thread(
+            target=lambda: _reanalyze(record_id, transcription, record["record_type"]),
+            daemon=True,
+        )
+        thread.start()
+        return jsonify({"ok": True, "action": "reanalyze"})
 
 
 @app.route("/stats")
@@ -583,6 +600,52 @@ def _reanalyze(record_id, transcription, record_type):
         update_record(record_id, analysis_json=analysis, status="done")
     except Exception as e:
         update_record(record_id, status="error")
+
+
+def _redownload_and_process(record_id, filename):
+    """Re-download a Zoom recording by file ID and reprocess it."""
+    from services.zoom import get_access_token, download_recording
+    import requests as _req
+    try:
+        # Extract zoom file ID from filename
+        zoom_file_id = filename.replace("zoom_", "").rsplit(".", 1)[0]
+        token = get_access_token()
+
+        # Search for the recording in Zoom API (last 30 days)
+        from datetime import datetime, timedelta
+        date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        meetings = _req.get(
+            "https://api.zoom.us/v2/users/me/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"page_size": 100, "from": date_from},
+            timeout=15,
+        ).json().get("meetings", [])
+
+        download_url = None
+        for m in meetings:
+            for f in m.get("recording_files", []):
+                if str(f.get("id")) == zoom_file_id:
+                    download_url = f.get("download_url")
+                    break
+            if download_url:
+                break
+
+        if not download_url:
+            update_record(record_id, transcription="[ПОМИЛКА]: Запис не знайдено в Zoom (минуло більше 30 днів?)", status="error")
+            return
+
+        print(f"[Redownload] Скачуємо ID:{record_id} | {filename}")
+        file_path = download_recording(download_url, filename)
+        text = transcribe(file_path)
+        update_record(record_id, transcription=text, status="analyzing")
+
+        rec = get_record(record_id)
+        analysis = analyze(rec["record_type"], text)
+        update_record(record_id, analysis_json=analysis, status="done")
+        print(f"[Redownload] ✅ ID:{record_id} готово")
+    except Exception as e:
+        print(f"[Redownload] ❌ {e}")
+        update_record(record_id, transcription=f"[ПОМИЛКА]: {e}", status="error")
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────
