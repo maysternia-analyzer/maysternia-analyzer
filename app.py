@@ -73,6 +73,29 @@ def process_record_async(record_id, file_path, record_type):
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
 
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    """First-run setup — only works if no users exist yet."""
+    if get_all_users():
+        return redirect(url_for("login"))
+    error = None
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        name = request.form.get("name", "").strip()
+        password = request.form.get("password", "").strip()
+        secret = request.form.get("secret", "")
+        if secret != os.environ.get("SECRET_KEY", ""):
+            error = "Невірний секретний ключ"
+        elif not email or not name or not password:
+            error = "Всі поля обов'язкові"
+        else:
+            ok = create_user(email, name, generate_password_hash(password), role="admin")
+            if ok:
+                return redirect(url_for("login"))
+            error = "Помилка створення"
+    return render_template("setup.html", error=error)
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if current_user.is_authenticated:
