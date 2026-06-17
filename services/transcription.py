@@ -7,29 +7,40 @@ from openai import OpenAI
 MAX_BYTES = 24 * 1024 * 1024  # 24 MB safe limit
 
 
-def _install_ffmpeg():
-    """Install ffmpeg via apt on Railway/Linux if not present."""
-    try:
-        subprocess.run(
-            ["apt-get", "install", "-y", "-q", "ffmpeg"],
-            check=True, capture_output=True, timeout=120,
-        )
-        return True
-    except Exception:
-        return False
+FFMPEG_STATIC = Path("/tmp/ffmpeg_static/ffmpeg")
+
+
+def _install_ffmpeg_static():
+    """Download static ffmpeg binary — works on any Linux without root."""
+    import urllib.request, tarfile
+    FFMPEG_STATIC.parent.mkdir(parents=True, exist_ok=True)
+    url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+    archive = Path("/tmp/ffmpeg_static/ffmpeg.tar.xz")
+    print("[ffmpeg] Завантажуємо статичний ffmpeg...", flush=True)
+    urllib.request.urlretrieve(url, archive)
+    with tarfile.open(archive, "r:xz") as tar:
+        for member in tar.getmembers():
+            if member.name.endswith("/ffmpeg") and "/" in member.name:
+                member.name = "ffmpeg"
+                tar.extract(member, path=str(FFMPEG_STATIC.parent))
+                break
+    FFMPEG_STATIC.chmod(0o755)
+    print("[ffmpeg] Встановлено!", flush=True)
+    return str(FFMPEG_STATIC)
 
 
 def _ffmpeg_path():
-    candidates = ["ffmpeg", "/usr/bin/ffmpeg", "/tmp/ffmpeg_bin/ffmpeg", "/usr/local/bin/ffmpeg"]
-    for candidate in candidates:
+    # Check standard locations first
+    for candidate in ["ffmpeg", "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", str(FFMPEG_STATIC)]:
         check = ["which", candidate] if "/" not in candidate else ["test", "-x", candidate]
         if subprocess.run(check, capture_output=True).returncode == 0:
             return candidate
-    # Try installing via apt (Railway/Debian environment)
-    if _install_ffmpeg():
-        if subprocess.run(["which", "ffmpeg"], capture_output=True).returncode == 0:
-            return "ffmpeg"
-    return None
+    # Download static binary as last resort
+    try:
+        return _install_ffmpeg_static()
+    except Exception as e:
+        print(f"[ffmpeg] Не вдалося встановити: {e}", flush=True)
+        return None
 
 
 def _compress(ff: str, src: Path, dst: Path):
