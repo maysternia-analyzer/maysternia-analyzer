@@ -85,32 +85,46 @@ def _split_and_transcribe(client, ff: str, path: Path) -> str:
     return " ".join(texts)
 
 
+def _transcribe_direct(client, path: Path) -> str:
+    """Send file directly to Whisper without compression."""
+    with open(path, "rb") as f:
+        resp = client.audio.transcriptions.create(
+            model="whisper-1", file=f, language="uk", response_format="verbose_json",
+        )
+    return resp.text
+
+
 def transcribe(file_path: str) -> str:
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     path = Path(file_path)
-    ff = _ffmpeg_path()
 
+    if not path.exists():
+        raise RuntimeError(f"Файл не знайдено: {file_path}")
+
+    size_mb = path.stat().st_size / 1024 / 1024
+    print(f"[Transcribe] Файл: {path.name} | {size_mb:.1f} MB", flush=True)
+
+    ff = _ffmpeg_path()
     if ff:
-        with tempfile.TemporaryDirectory() as tmp:
-            compressed = Path(tmp) / "audio.mp3"
-            _compress(ff, path, compressed)
-            if compressed.stat().st_size <= MAX_BYTES:
-                with open(compressed, "rb") as f:
-                    resp = client.audio.transcriptions.create(
-                        model="whisper-1", file=f, language="uk", response_format="verbose_json",
-                    )
-                return resp.text
-            else:
-                return _split_and_transcribe(client, ff, compressed)
+        print(f"[Transcribe] ffmpeg знайдено: {ff}", flush=True)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                compressed = Path(tmp) / "audio.mp3"
+                _compress(ff, path, compressed)
+                comp_size = compressed.stat().st_size
+                print(f"[Transcribe] Стиснуто: {comp_size/1024/1024:.1f} MB", flush=True)
+                if comp_size <= MAX_BYTES:
+                    return _transcribe_direct(client, compressed)
+                else:
+                    return _split_and_transcribe(client, ff, compressed)
+        except Exception as e:
+            print(f"[Transcribe] ffmpeg помилка: {e} — пробуємо без стиснення", flush=True)
+
+    # Fallback: send original file directly
+    if path.stat().st_size <= MAX_BYTES:
+        print(f"[Transcribe] Відправляємо оригінал напряму до Whisper", flush=True)
+        return _transcribe_direct(client, path)
     else:
-        if path.stat().st_size <= MAX_BYTES:
-            with open(path, "rb") as f:
-                resp = client.audio.transcriptions.create(
-                    model="whisper-1", file=f, language="uk", response_format="verbose_json",
-                )
-            return resp.text
-        else:
-            size_mb = path.stat().st_size / 1024 / 1024
-            raise RuntimeError(
-                f"Файл {size_mb:.1f} МБ перевищує ліміт 25 МБ. ffmpeg не знайдено."
-            )
+        raise RuntimeError(
+            f"Файл {size_mb:.1f} МБ перевищує ліміт 25 МБ і ffmpeg не зміг стиснути."
+        )
