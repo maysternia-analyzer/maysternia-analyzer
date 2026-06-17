@@ -1,5 +1,6 @@
 [build]
 builder = "nixpacks"
+nixpacksPlan = "nixpacks.toml"
 
 [deploy]
 startCommand = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
