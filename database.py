@@ -46,6 +46,7 @@ def init_db():
     cur = conn.cursor()
 
     if USE_POSTGRES:
+        conn.autocommit = True
         cur.execute("""
             CREATE TABLE IF NOT EXISTS records (
                 id SERIAL PRIMARY KEY,
@@ -123,12 +124,13 @@ def init_db():
             ("sale_amount",  "REAL DEFAULT NULL"),
         ]:
             try:
-                conn.execute(f"ALTER TABLE records ADD COLUMN {col} {definition}")
+                cur.execute(f"ALTER TABLE records ADD COLUMN {col} {definition}")
                 conn.commit()
             except Exception:
                 pass
 
-    conn.commit()
+    if not USE_POSTGRES:
+        conn.commit()
     cur.close()
     conn.close()
 

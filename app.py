@@ -247,11 +247,14 @@ def sales_page():
 
 
 def _get_trainers_from_sales():
-    from database import get_db
+    from database import get_db, _fetchall, USE_POSTGRES
     conn = get_db()
-    rows = conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         "SELECT DISTINCT trainer_name FROM records WHERE record_type='sales' AND trainer_name != '' ORDER BY trainer_name"
-    ).fetchall()
+    )
+    rows = _fetchall(cur)
+    cur.close()
     conn.close()
     return [r["trainer_name"] for r in rows]
 
@@ -356,11 +359,13 @@ def save_sale_result(record_id):
 @login_required
 def update_meta(record_id):
     data = request.get_json()
-    from database import get_db
+    from database import get_db, _p
     conn = get_db()
-    conn.execute("UPDATE records SET record_type=?, person_name=? WHERE id=?",
-                 (data.get("record_type"), data.get("person_name"), record_id))
-    conn.commit(); conn.close()
+    cur = conn.cursor()
+    p = _p()
+    cur.execute(f"UPDATE records SET record_type={p}, person_name={p} WHERE id={p}",
+                (data.get("record_type"), data.get("person_name"), record_id))
+    conn.commit(); cur.close(); conn.close()
     return jsonify({"ok": True})
 
 
@@ -375,11 +380,11 @@ def save_comment(record_id):
 @app.route("/record/<int:record_id>/delete", methods=["POST"])
 @login_required
 def delete_record(record_id):
-    from database import get_db
+    from database import get_db, _p
     conn = get_db()
-    conn.execute("DELETE FROM records WHERE id=?", (record_id,))
-    conn.commit()
-    conn.close()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM records WHERE id={_p()}", (record_id,))
+    conn.commit(); cur.close(); conn.close()
     return redirect(url_for("dashboard"))
 
 
@@ -540,10 +545,13 @@ def _process_zoom_recording(rec: dict):
             transcript_preview=text[:2000],
         )
         # Update record with correct type and name
-        conn = __import__('database').get_db()
-        conn.execute("UPDATE records SET record_type=?, person_name=? WHERE id=?",
-                     (detection["record_type"], detection["person_name"], record_id))
-        conn.commit(); conn.close()
+        _db = __import__('database')
+        conn = _db.get_db()
+        cur = conn.cursor()
+        p = _db._p()
+        cur.execute(f"UPDATE records SET record_type={p}, person_name={p} WHERE id={p}",
+                    (detection["record_type"], detection["person_name"], record_id))
+        conn.commit(); cur.close(); conn.close()
         print(f"[Zoom] Тип: {detection['record_type']} | Імʼя: {detection['person_name']}")
     except Exception as e:
         print(f"[Zoom] ⚠ Помилка визначення типу: {e}")
