@@ -54,7 +54,7 @@
   ⚠️ Сталась помилка під час обробки.<br>
   <small>{{ record.transcription }}</small>
 </div>
-{% if record.transcription and not record.transcription.startswith('[ПОМИЛКА]') %}
+{% if record.transcription and not record.transcription.startswith('[ПОМИЛКА') %}
 <div style="margin-top:16px">
   <button class="btn btn-primary" id="reanalyze-btn" data-record-id="{{ record.id }}">
     🔄 Проаналізувати повторно
@@ -63,7 +63,10 @@
 </div>
 {% else %}
 <div style="margin-top:16px">
-  <a href="{{ url_for('upload') }}" class="btn btn-primary">↑ Завантажити заново</a>
+  <button class="btn btn-primary" id="reanalyze-btn" data-record-id="{{ record.id }}">
+    🔄 Завантажити та проаналізувати заново
+  </button>
+  <p style="margin-top:8px;font-size:13px;color:var(--text-muted)">Завантажить запис з Zoom та запустить аналіз.</p>
 </div>
 {% endif %}
 
