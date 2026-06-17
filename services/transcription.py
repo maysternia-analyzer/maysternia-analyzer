@@ -7,11 +7,28 @@ from openai import OpenAI
 MAX_BYTES = 24 * 1024 * 1024  # 24 MB safe limit
 
 
+def _install_ffmpeg():
+    """Install ffmpeg via apt on Railway/Linux if not present."""
+    try:
+        subprocess.run(
+            ["apt-get", "install", "-y", "-q", "ffmpeg"],
+            check=True, capture_output=True, timeout=120,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _ffmpeg_path():
-    for candidate in ["ffmpeg", "/tmp/ffmpeg_bin/ffmpeg", "/usr/local/bin/ffmpeg"]:
-        check = ["which", candidate] if candidate == "ffmpeg" else ["test", "-x", candidate]
+    candidates = ["ffmpeg", "/usr/bin/ffmpeg", "/tmp/ffmpeg_bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+    for candidate in candidates:
+        check = ["which", candidate] if "/" not in candidate else ["test", "-x", candidate]
         if subprocess.run(check, capture_output=True).returncode == 0:
             return candidate
+    # Try installing via apt (Railway/Debian environment)
+    if _install_ffmpeg():
+        if subprocess.run(["which", "ffmpeg"], capture_output=True).returncode == 0:
+            return "ffmpeg"
     return None
 
 
