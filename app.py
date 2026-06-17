@@ -499,14 +499,21 @@ def zoom_webhook():
 
     recordings = parse_webhook_payload(data)
     print(f"[Zoom] Знайдено файлів для обробки: {len(recordings)}")
+
+    existing_filenames = {r["filename"] for r in get_all_records()}
+    started = 0
     for rec in recordings:
+        if rec["filename"] in existing_filenames:
+            print(f"[Zoom] Пропускаємо дублікат: {rec['filename']}")
+            continue
         print(f"[Zoom] Запускаємо: {rec['topic']} | {rec['filename']} | breakout={rec['is_breakout']}")
         thread = threading.Thread(
             target=_process_zoom_recording, args=(rec,), daemon=True
         )
         thread.start()
+        started += 1
 
-    return jsonify({"ok": True, "count": len(recordings)})
+    return jsonify({"ok": True, "count": started})
 
 
 def _process_zoom_recording(rec: dict):

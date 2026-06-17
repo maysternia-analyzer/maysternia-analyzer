@@ -30,25 +30,25 @@ def download_recording(download_url: str, filename: str) -> str:
     token = get_access_token()
     save_path = UPLOAD_FOLDER / filename
 
-    # Strip any existing (expired) access_token from the URL, then add fresh one
-    parsed = urlparse(download_url)
-    params = parse_qs(parsed.query)
-    params.pop("access_token", None)
-    clean_url = urlunparse(parsed._replace(query=urlencode({k: v[0] for k, v in params.items()})))
-    url_with_token = f"{clean_url}{'&' if '?' in clean_url else '?'}access_token={token}"
+    # Try Authorization header first (works for webhook_download URLs)
     resp = requests.get(
-        url_with_token,
+        download_url,
+        headers={"Authorization": f"Bearer {token}"},
         stream=True,
         timeout=300,
         allow_redirects=True,
     )
 
-    # If redirect dropped the token, retry with header
+    # Fallback: strip existing token from URL and add fresh one as query param
     if resp.status_code == 401:
+        parsed = urlparse(download_url)
+        params = parse_qs(parsed.query)
+        params.pop("access_token", None)
+        clean_url = urlunparse(parsed._replace(query=urlencode({k: v[0] for k, v in params.items()})))
+        url_with_token = f"{clean_url}{'&' if '?' in clean_url else '?'}access_token={token}"
         resp = requests.get(
-            download_url,
+            url_with_token,
             headers={"Authorization": f"Bearer {token}"},
-            params={"access_token": token},
             stream=True,
             timeout=300,
             allow_redirects=True,
@@ -71,7 +71,7 @@ def parse_webhook_payload(payload: dict) -> list[dict]:
     """
     recording = payload.get("payload", {}).get("object", {})
     topic = recording.get("topic", "")
-    start_time = recording.get("start_time", "")[:10]  # YYYY-MM-DD
+    start_time = recording.get("start_time", "")  # full ISO string
     duration = recording.get("duration", 0)
     host_email = recording.get("host_email", "")
     host_name = _email_to_name(host_email)
