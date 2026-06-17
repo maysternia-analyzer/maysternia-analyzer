@@ -30,9 +30,15 @@ def _install_ffmpeg_static():
 
 
 def _ffmpeg_path():
-    # Check standard locations first
-    for candidate in ["ffmpeg", "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", str(FFMPEG_STATIC)]:
-        check = ["which", candidate] if "/" not in candidate else ["test", "-x", candidate]
+    candidates = [
+        "/root/.nix-profile/bin/ffmpeg",  # Railway nixpacks
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        str(FFMPEG_STATIC),
+        "ffmpeg",
+    ]
+    for candidate in candidates:
+        check = ["test", "-x", candidate] if "/" in candidate else ["which", candidate]
         if subprocess.run(check, capture_output=True).returncode == 0:
             return candidate
     # Download static binary as last resort
