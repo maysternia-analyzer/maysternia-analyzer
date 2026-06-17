@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block title %}Продажі — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>💰 Продажі менеджерів</h1>
+</div>
+
+{# ── Stats ── #}
+{% set done_sales = records|selectattr("status","eq","done")|selectattr("analysis")|list %}
+{% set sold = records|selectattr("sale_made","equalto",1)|list %}
+{% set not_sold = records|selectattr("sale_made","equalto",0)|list %}
+{% set total_rev = sold|map(attribute="sale_amount")|select|sum %}
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Всього продажів</div>
+    <div class="stat-value">{{ records|length }}</div>
+    <div class="stat-sub">{{ done_sales|length }} проаналізовано</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Угод закрито</div>
+    <div class="stat-value" style="color:var(--green)">{{ sold|length }}</div>
+    <div class="stat-sub">{{ not_sold|length }} не закрито</div>
+  </div>
+  {% if stats.conversion is defined %}
+  <div class="stat-card">
+    <div class="stat-label">AI-конверсія</div>
+    <div class="stat-value" style="color:{% if stats.conversion>=60 %}var(--green){% elif stats.conversion>=35 %}var(--yellow){% else %}var(--red){% endif %}">{{ stats.conversion }}%</div>
+    <div class="stat-sub">прогноз по чек-ліству</div>
+  </div>
+  {% endif %}
+  {% if total_rev > 0 %}
+  <div class="stat-card">
+    <div class="stat-label">Сума закритих угод</div>
+    <div class="stat-value" style="font-size:22px;color:var(--green)">{{ "{:,.0f}".format(total_rev) }} ₴</div>
+    <div class="stat-sub">реальний дохід</div>
+  </div>
+  {% elif stats.by_person %}
+    {% set best = stats.by_person.items()|sort(attribute=1,reverse=true)|first %}
+    <div class="stat-card">
+      <div class="stat-label">Кращий менеджер</div>
+      <div class="stat-value" style="font-size:20px">{{ best[0] }}</div>
+      <div class="stat-sub">{{ best[1] }}% чек-ліст</div>
+    </div>
+  {% endif %}
+</div>
+
+{# ── Per-manager scores ── #}
+{% if stats.by_person %}
+<div class="card" style="margin-bottom:24px">
+  <div class="section-title">Середній чек-ліст по менеджерах</div>
+  <div style="display:flex;flex-wrap:wrap;gap:16px">
+    {% for person, score in stats.by_person.items()|sort(attribute=1,reverse=true) %}
+    <div style="min-width:180px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+        <span style="font-weight:500">{{ person }}</span>
+        <span style="color:{% if score>=75 %}var(--green){% elif score>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ score }}%</span>
+      </div>
+      <div class="score-bar-track" style="height:8px"><div class="score-bar-fill" data-score="{{ score }}"></div></div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Filters ── #}
+<form method="get" action="{{ url_for('sales_page') }}">
+  <div class="filters">
+    <div class="filter-group">
+      <label class="filter-label">Менеджер</label>
+      <select name="manager" onchange="this.form.submit()">
+        <option value="">Всі менеджери</option>
+        {% for p in managers %}
+        <option value="{{ p }}" {{ 'selected' if filters.manager==p }}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if trainers %}
+    <div class="filter-group">
+      <label class="filter-label">Тренер</label>
+      <select name="trainer" onchange="this.form.submit()">
+        <option value="">Всі тренери</option>
+        {% for p in trainers %}
+        <option value="{{ p }}" {{ 'selected' if filters.trainer==p }}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <div class="filter-group">
+      <label class="filter-label">Від</label>
+      <input type="date" name="date_from" value="{{ filters.date_from }}" onchange="this.form.submit()">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">До</label>
+      <input type="date" name="date_to" value="{{ filters.date_to }}" onchange="this.form.submit()">
+    </div>
+    {% if filters.manager or filters.trainer or filters.date_from or filters.date_to %}
+    <a href="{{ url_for('sales_page') }}" class="btn btn-ghost btn-sm" style="align-self:flex-end">✕ Скинути</a>
+    {% endif %}
+  </div>
+</form>
+
+{# ── Table ── #}
+<div class="card" style="padding:0;overflow:hidden">
+  <div class="table-wrap">
+    {% if records %}
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="0">Дата та час</th>
+          <th data-sort="1">Менеджер</th>
+          <th>Тренер</th>
+          <th data-sort="3">Чек-ліст</th>
+          <th data-sort="4">Шанс угоди</th>
+          <th>Теплота</th>
+          <th>Результат</th>
+          <th>Сума</th>
+          <th>Статус</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in records %}
+        {% set a = r.get('analysis', {}) %}
+        <tr class="clickable" data-href="{{ url_for('record_detail', record_id=r.id) }}">
+          <td style="white-space:nowrap" data-val="{{ r.record_date }}">
+            <div>{{ r.record_date }}</div>
+            {% if r.record_time %}<div style="font-size:12px;color:var(--text-muted)">{{ r.record_time }}</div>{% endif %}
+          </td>
+          <td style="font-weight:500">{{ r.person_name }}</td>
+          <td style="color:var(--text-muted);font-size:13px">{{ r.trainer_name or '—' }}</td>
+          {% if a.checklist_score is defined %}
+            {% set s = a.checklist_score %}
+            <td data-val="{{ s }}">
+              <div class="score-bar">
+                <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ s }}"></div></div>
+                <span class="score-bar-num" style="color:{% if s>=75 %}var(--green){% elif s>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ s }}%</span>
+              </div>
+            </td>
+          {% else %}<td data-val="-1">—</td>{% endif %}
+          {% if a.deal_chance %}
+            {% set pct = a.deal_chance_percent|default(0) %}
+            <td data-val="{{ pct }}">
+              {% if a.deal_chance == 'Високий' %}<span class="badge badge-green">{{ pct }}%</span>
+              {% elif a.deal_chance == 'Середній' %}<span class="badge badge-yellow">{{ pct }}%</span>
+              {% else %}<span class="badge badge-red">{{ pct }}%</span>{% endif %}
+            </td>
+          {% else %}<td data-val="0">—</td>{% endif %}
+          <td>
+            {% set lt = a.lead_temperature|default('') %}
+            {% if lt == 'Гарячий' %}<span class="badge badge-green">🔥 {{ lt }}</span>
+            {% elif lt == 'Теплий' %}<span class="badge badge-yellow">🌡️ {{ lt }}</span>
+            {% elif lt %}<span class="badge badge-red">🧊 {{ lt }}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if r.sale_made == 1 %}<span class="badge badge-green">✅ Продано</span>
+            {% elif r.sale_made == 0 %}<span class="badge badge-red">❌ Не продано</span>
+            {% else %}<span class="badge badge-gray">— Невідомо</span>{% endif %}
+          </td>
+          <td style="font-weight:600;color:var(--green)">
+            {% if r.sale_amount %} {{ "{:,.0f}".format(r.sale_amount) }} ₴{% else %}—{% endif %}
+          </td>
+          <td>
+            {% if r.status == 'done' %}<span class="badge badge-green">Готово</span>
+            {% elif r.status in ('processing','analyzing') %}<span class="badge badge-yellow">Обробка</span>
+            {% elif r.status == 'error' %}<span class="badge badge-red">Помилка</span>
+            {% else %}<span class="badge badge-gray">{{ r.status }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="padding:60px;text-align:center;color:var(--text-muted)">
+      <div style="font-size:48px;margin-bottom:16px">💰</div>
+      <p>Продажів ще немає. <a href="{{ url_for('upload') }}">Завантажте запис →</a></p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

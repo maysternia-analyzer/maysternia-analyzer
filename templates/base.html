@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Майстерня Аналізатор{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="with-sidebar">
+
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <span class="sidebar-brand-icon">🎭</span>
+    <div>
+      <div class="sidebar-brand-title">Майстерня</div>
+      <div class="sidebar-brand-sub">Аналізатор</div>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <a href="{{ url_for('dashboard') }}" class="sidebar-link {{ 'active' if request.endpoint == 'dashboard' }}">
+      <span class="sidebar-icon">🏠</span> Дашборд
+    </a>
+    <a href="{{ url_for('lessons_page') }}" class="sidebar-link {{ 'active' if request.endpoint == 'lessons_page' }}">
+      <span class="sidebar-icon">🎓</span> Заняття
+    </a>
+    <a href="{{ url_for('sales_page') }}" class="sidebar-link {{ 'active' if request.endpoint == 'sales_page' }}">
+      <span class="sidebar-icon">💰</span> Продажі
+    </a>
+    <a href="{{ url_for('stats_page') }}" class="sidebar-link {{ 'active' if request.endpoint == 'stats_page' }}">
+      <span class="sidebar-icon">📊</span> Статистика
+    </a>
+    <a href="{{ url_for('analytics_page') }}" class="sidebar-link {{ 'active' if request.endpoint == 'analytics_page' }}">
+      <span class="sidebar-icon">🧠</span> Аналітика
+    </a>
+  </nav>
+
+  <div class="sidebar-bottom">
+    <a href="{{ url_for('upload') }}" class="btn btn-primary" style="width:100%;justify-content:center">
+      + Нова запис
+    </a>
+
+    {% if current_user.is_authenticated %}
+    <div style="margin-top:16px;padding:12px;background:var(--surface2);border-radius:var(--radius-sm)">
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px">{{ current_user.name }}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+        {% if current_user.role == 'admin' %}👑 Адмін{% else %}👁 Переглядач{% endif %}
+      </div>
+      <div style="display:flex;gap:6px">
+        {% if current_user.is_admin() %}
+        <a href="{{ url_for('admin_users') }}" class="btn btn-outline btn-sm" style="flex:1;justify-content:center;font-size:12px">👥 Юзери</a>
+        {% endif %}
+        <a href="{{ url_for('logout') }}" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center;font-size:12px">Вийти</a>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</aside>
+
+<main class="main-content">
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+</main>
+
+<script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

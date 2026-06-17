@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Заняття — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>🎓 Пробні заняття</h1>
+</div>
+
+{# ── Stats ── #}
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Всього занять</div>
+    <div class="stat-value">{{ records|length }}</div>
+    <div class="stat-sub">записів</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Проаналізовано</div>
+    <div class="stat-value">{{ records|selectattr("status","eq","done")|list|length }}</div>
+    <div class="stat-sub">готово</div>
+  </div>
+  {% set done_lessons = records|selectattr("status","eq","done")|selectattr("analysis")|list %}
+  {% if done_lessons %}
+    {% set avg = (done_lessons|map(attribute="analysis")|map(attribute="overall_score",default=0)|sum / done_lessons|length)|round|int %}
+    <div class="stat-card">
+      <div class="stat-label">Середня оцінка</div>
+      <div class="stat-value" style="color:{% if avg>=75 %}var(--green){% elif avg>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ avg }}%</div>
+      <div class="stat-sub">по тренерах</div>
+    </div>
+  {% endif %}
+  {% if stats.by_trainer %}
+    {% set best = stats.by_trainer.items()|sort(attribute=1,reverse=true)|first %}
+    <div class="stat-card">
+      <div class="stat-label">Кращий тренер</div>
+      <div class="stat-value" style="font-size:20px">{{ best[0] }}</div>
+      <div class="stat-sub">{{ best[1] }}% середній</div>
+    </div>
+  {% endif %}
+</div>
+
+{# ── Per-trainer scores ── #}
+{% if stats.by_trainer %}
+<div class="card" style="margin-bottom:24px">
+  <div class="section-title">Середня оцінка по тренерах</div>
+  <div style="display:flex;flex-wrap:wrap;gap:16px">
+    {% for person, score in stats.by_trainer.items() %}
+    <div style="min-width:160px">
+      <div style="font-size:13px;margin-bottom:6px;font-weight:500">{{ person }}</div>
+      <div class="score-bar">
+        <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ score }}"></div></div>
+        <span class="score-bar-num" style="color:{% if score>=75 %}var(--green){% elif score>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ score }}%</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Filters ── #}
+<form method="get" action="{{ url_for('lessons_page') }}">
+  <div class="filters">
+    <div class="filter-group">
+      <label class="filter-label">Тренер</label>
+      <select name="person" onchange="this.form.submit()">
+        <option value="">Всі тренери</option>
+        {% for p in trainers %}
+        <option value="{{ p }}" {{ 'selected' if filters.person==p }}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">Від</label>
+      <input type="date" name="date_from" value="{{ filters.date_from }}" onchange="this.form.submit()">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">До</label>
+      <input type="date" name="date_to" value="{{ filters.date_to }}" onchange="this.form.submit()">
+    </div>
+    {% if filters.person or filters.date_from or filters.date_to %}
+    <a href="{{ url_for('lessons_page') }}" class="btn btn-ghost btn-sm" style="align-self:flex-end">✕ Скинути</a>
+    {% endif %}
+  </div>
+</form>
+
+{# ── Table ── #}
+<div class="card" style="padding:0;overflow:hidden">
+  <div class="table-wrap">
+    {% if records %}
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="0">Дата та час</th>
+          <th data-sort="1">Тренер</th>
+          <th data-sort="2">Оцінка</th>
+          <th>Залученість</th>
+          <th>Привітання</th>
+          <th>Структура</th>
+          <th>Вправи</th>
+          <th>Перехід</th>
+          <th>Статус</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in records %}
+        {% set a = r.get('analysis', {}) %}
+        <tr class="clickable" data-href="{{ url_for('record_detail', record_id=r.id) }}">
+          <td style="white-space:nowrap" data-val="{{ r.record_date }}">
+            <div>{{ r.record_date }}</div>
+            {% if r.record_time %}<div style="font-size:12px;color:var(--text-muted)">{{ r.record_time }}</div>{% endif %}
+          </td>
+          <td style="font-weight:500">{{ r.person_name }}</td>
+          {% if a.overall_score is defined %}
+            {% set s = a.overall_score %}
+            <td data-val="{{ s }}">
+              <div class="score-bar">
+                <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ s }}"></div></div>
+                <span class="score-bar-num" style="color:{% if s>=75 %}var(--green){% elif s>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ s }}%</span>
+              </div>
+            </td>
+          {% else %}<td data-val="-1">—</td>{% endif %}
+          <td>
+            {% set eng = a.engagement_level|default('') %}
+            {% if eng == 'Високий' %}<span class="badge badge-green">{{ eng }}</span>
+            {% elif eng == 'Середній' %}<span class="badge badge-yellow">{{ eng }}</span>
+            {% elif eng == 'Низький' %}<span class="badge badge-red">{{ eng }}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td>{% if a.greeting is defined %}{{ '✅' if a.greeting.result else '❌' }}{% else %}—{% endif %}</td>
+          <td>{% if a.structure_explained is defined %}{{ '✅' if a.structure_explained.result else '❌' }}{% else %}—{% endif %}</td>
+          <td>{% if a.practical_exercises is defined %}{{ '✅' if a.practical_exercises.result else '❌' }}{% else %}—{% endif %}</td>
+          <td>{% if a.transition_to_manager is defined %}{{ '✅' if a.transition_to_manager.result else '❌' }}{% else %}—{% endif %}</td>
+          <td>
+            {% if r.status == 'done' %}<span class="badge badge-green">Готово</span>
+            {% elif r.status in ('processing','analyzing') %}<span class="badge badge-yellow">Обробка</span>
+            {% elif r.status == 'error' %}<span class="badge badge-red">Помилка</span>
+            {% else %}<span class="badge badge-gray">{{ r.status }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="padding:60px;text-align:center;color:var(--text-muted)">
+      <div style="font-size:48px;margin-bottom:16px">🎓</div>
+      <p>Занять ще немає. <a href="{{ url_for('upload') }}">Завантажте запис →</a></p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

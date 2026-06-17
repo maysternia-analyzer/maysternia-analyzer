@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Нова запис — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="upload-card">
+  <div class="page-header">
+    <h1>Завантажити запис</h1>
+  </div>
+
+  {% if error %}
+  <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" enctype="multipart/form-data" id="upload-form">
+
+    <div class="form-group">
+      <label class="form-label">Тип запису</label>
+      <div class="radio-group">
+        <label class="radio-option">
+          <input type="radio" name="record_type" value="lesson" required>
+          <div>
+            <div class="radio-option-label">🎓 Пробне заняття</div>
+            <div class="radio-option-sub">Аналіз тренера</div>
+          </div>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="record_type" value="sales" required>
+          <div>
+            <div class="radio-option-label">💰 Продаж менеджера</div>
+            <div class="radio-option-sub">Аналіз продажу</div>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="person_name">Імʼя тренера / менеджера</label>
+      <input class="form-control" type="text" id="person_name" name="person_name"
+             placeholder="Наприклад: Олена Ковальчук" required>
+    </div>
+
+    <div class="form-group" id="trainer-name-group" style="display:none">
+      <label class="form-label" for="trainer_name">Імʼя тренера (для продажу)</label>
+      <input class="form-control" type="text" id="trainer_name" name="trainer_name"
+             placeholder="Тренер який проводив пробне заняття">
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="form-group">
+        <label class="form-label" for="record_date">Дата запису</label>
+        <input class="form-control" type="date" id="record_date" name="record_date"
+               value="{{ today }}" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="record_time">Час початку</label>
+        <input class="form-control" type="time" id="record_time" name="record_time">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Файл запису (mp4, m4a, mp3, wav)</label>
+      <div class="drop-zone" id="drop-zone">
+        <div class="drop-zone-icon">🎙️</div>
+        <div class="drop-zone-text">
+          Перетягніть файл сюди або <strong>клікніть для вибору</strong>
+        </div>
+        <div class="drop-zone-text" style="margin-top:6px;font-size:12px">
+          Підтримується: mp4, m4a, mp3, wav, webm · Макс. 500 МБ
+        </div>
+        <div class="drop-zone-file-name" id="file-name" style="display:none"></div>
+      </div>
+      <input type="file" id="file-input" name="file" accept=".mp4,.m4a,.mp3,.wav,.webm,.mov" style="display:none">
+    </div>
+
+    <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;padding:14px">
+      🚀 Транскрибувати та проаналізувати
+    </button>
+
+  </form>
+
+  <p style="margin-top:16px;font-size:12px;color:var(--text-muted);text-align:center">
+    Після завантаження система автоматично транскрибує запис через Whisper API<br>
+    та проведе AI-аналіз через Claude. Це займає 1–3 хвилини.
+  </p>
+</div>
+
+<script>
+  const dateInput = document.getElementById('record_date');
+  if (!dateInput.value) dateInput.value = new Date().toISOString().split('T')[0];
+
+  // Show trainer field only for sales
+  function updateTrainerField() {
+    const selected = document.querySelector('input[name="record_type"]:checked');
+    const group = document.getElementById('trainer-name-group');
+    if (group) group.style.display = selected && selected.value === 'sales' ? 'block' : 'none';
+  }
+  document.querySelectorAll('input[name="record_type"]').forEach(r => r.addEventListener('change', updateTrainerField));
+  updateTrainerField();
+</script>
+{% endblock %}

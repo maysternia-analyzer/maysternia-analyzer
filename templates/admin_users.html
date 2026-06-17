@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Користувачі — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>👥 Управління користувачами</h1>
+</div>
+
+{# ── Add user form ── #}
+<div class="card" style="margin-bottom:24px">
+  <div class="section-title">Додати користувача</div>
+  <form method="POST" action="{{ url_for('admin_create_user') }}">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:12px;align-items:flex-end">
+      <div class="filter-group">
+        <label class="filter-label">Email</label>
+        <input type="email" name="email" class="form-control" placeholder="email@example.com" required>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label">Ім'я</label>
+        <input type="text" name="name" class="form-control" placeholder="Ім'я Прізвище" required>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label">Пароль</label>
+        <input type="text" name="password" class="form-control" placeholder="мінімум 6 символів" required>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label">Роль</label>
+        <select name="role" class="form-control">
+          <option value="viewer">Переглядач</option>
+          <option value="admin">Адміністратор</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary">+ Додати</button>
+    </div>
+  </form>
+</div>
+
+{# ── Users table ── #}
+<div class="card" style="padding:0;overflow:hidden">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Ім'я</th>
+          <th>Email</th>
+          <th>Роль</th>
+          <th>Статус</th>
+          <th>Створено</th>
+          <th>Дії</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td style="font-weight:500">
+            {{ u.name }}
+            {% if u.id == current_user.id %}
+            <span style="font-size:11px;color:var(--accent);margin-left:6px">(ви)</span>
+            {% endif %}
+          </td>
+          <td style="color:var(--text-muted)">{{ u.email }}</td>
+          <td>
+            {% if u.role == 'admin' %}
+            <span class="badge badge-yellow">Адмін</span>
+            {% else %}
+            <span class="badge badge-gray">Переглядач</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if u.is_active %}
+            <span class="badge badge-green">Активний</span>
+            {% else %}
+            <span class="badge badge-red">Заблокований</span>
+            {% endif %}
+          </td>
+          <td style="color:var(--text-muted);font-size:13px">{{ u.created_at[:10] }}</td>
+          <td>
+            {% if u.id != current_user.id %}
+            <div style="display:flex;gap:8px;align-items:center">
+              {# Toggle active #}
+              <form method="POST" action="{{ url_for('admin_toggle_user', user_id=u.id) }}" style="display:inline">
+                <button type="submit" class="btn btn-sm btn-outline" title="{{ 'Заблокувати' if u.is_active else 'Активувати' }}">
+                  {{ '🔒' if u.is_active else '🔓' }}
+                </button>
+              </form>
+
+              {# Change password #}
+              <button class="btn btn-sm btn-outline" onclick="togglePwForm({{ u.id }})" title="Змінити пароль">🔑</button>
+
+              {# Delete #}
+              <form method="POST" action="{{ url_for('admin_delete_user', user_id=u.id) }}" style="display:inline"
+                    onsubmit="return confirm('Видалити користувача {{ u.name }}?')">
+                <button type="submit" class="btn btn-sm btn-danger" title="Видалити">🗑</button>
+              </form>
+            </div>
+
+            {# Password form (hidden) #}
+            <form method="POST" action="{{ url_for('admin_change_password', user_id=u.id) }}"
+                  id="pw-form-{{ u.id }}" style="display:none;margin-top:8px;display:none">
+              <div style="display:flex;gap:8px">
+                <input type="text" name="password" class="form-control" placeholder="Новий пароль" style="width:160px">
+                <button type="submit" class="btn btn-sm btn-primary">Зберегти</button>
+                <button type="button" class="btn btn-sm btn-ghost" onclick="togglePwForm({{ u.id }})">✕</button>
+              </div>
+            </form>
+            {% else %}
+            <span style="font-size:13px;color:var(--text-muted)">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+function togglePwForm(id) {
+  const form = document.getElementById('pw-form-' + id);
+  form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+  form.style.flexDirection = 'row';
+}
+</script>
+{% endblock %}

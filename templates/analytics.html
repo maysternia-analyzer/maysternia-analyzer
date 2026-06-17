@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+{% block title %}Аналітика — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>🧠 Аналітика бази</h1>
+  {% if insights %}
+  <span style="font-size:13px;color:var(--text-muted)">
+    Оновлено: {{ insights.updated_at[:16].replace('T',' ') }}
+  </span>
+  {% endif %}
+</div>
+
+{# ── Filter + Generate ── #}
+<div class="card" style="margin-bottom:24px">
+  <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+    <div class="filter-group">
+      <label class="filter-label">Від</label>
+      <input type="date" id="af-from" value="{{ date_from }}">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">До</label>
+      <input type="date" id="af-to" value="{{ date_to }}">
+    </div>
+    <button class="btn btn-primary" id="generate-btn">
+      ✨ Згенерувати аналіз
+    </button>
+    <span id="generate-status" style="font-size:13px;color:var(--text-muted)"></span>
+  </div>
+  <p style="margin-top:12px;font-size:13px;color:var(--text-muted)">
+    AI проаналізує всі записи за вибраний період і сформує інсайти. Займає ~30 секунд.
+  </p>
+</div>
+
+{% if not insights %}
+<div class="card" style="text-align:center;padding:80px 24px">
+  <div style="font-size:56px;margin-bottom:16px">🧠</div>
+  <div style="font-size:18px;font-weight:600;margin-bottom:8px">Аналіз ще не згенерований</div>
+  <p style="color:var(--text-muted);max-width:400px;margin:0 auto">
+    Натисніть «Згенерувати аналіз» — AI проаналізує всю базу продажів та занять і сформує інсайти для компанії.
+  </p>
+</div>
+{% else %}
+{% set d = insights.data %}
+
+{# ── Summary ── #}
+<div class="card" style="margin-bottom:20px;border-left:4px solid var(--accent)">
+  <div class="section-title">Загальний висновок</div>
+  <p style="font-size:15px;line-height:1.7">{{ d.summary }}</p>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+
+  {# ── Sales patterns ── #}
+  <div class="card">
+    <div class="section-title">📈 Закономірності продажів</div>
+    {% set sp = d.sales_patterns %}
+    <div style="display:flex;gap:24px;margin-bottom:16px;flex-wrap:wrap">
+      {% if sp.avg_checklist_score is not none %}
+      <div>
+        <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Чек-ліст</div>
+        <div style="font-size:24px;font-weight:700;color:{% if sp.avg_checklist_score>=75 %}var(--green){% elif sp.avg_checklist_score>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ sp.avg_checklist_score }}%</div>
+      </div>
+      {% endif %}
+      {% if sp.conversion_rate is not none %}
+      <div>
+        <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Конверсія</div>
+        <div style="font-size:24px;font-weight:700;color:var(--accent)">{{ sp.conversion_rate }}%</div>
+      </div>
+      {% endif %}
+      {% if sp.total_revenue %}
+      <div>
+        <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Виручка</div>
+        <div style="font-size:24px;font-weight:700;color:var(--green)">{{ "{:,.0f}".format(sp.total_revenue) }} ₴</div>
+      </div>
+      {% endif %}
+      {% if sp.avg_deal_size %}
+      <div>
+        <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Сер. угода</div>
+        <div style="font-size:24px;font-weight:700;color:var(--text)">{{ "{:,.0f}".format(sp.avg_deal_size) }} ₴</div>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if sp.success_factors %}
+    <div style="margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--green);margin-bottom:6px;text-transform:uppercase">✅ Що спрацьовує</div>
+      {% for f in sp.success_factors %}
+      <div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border);color:var(--text-muted)">{{ f }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if sp.failure_factors %}
+    <div>
+      <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:6px;text-transform:uppercase">❌ Що не спрацьовує</div>
+      {% for f in sp.failure_factors %}
+      <div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border);color:var(--text-muted)">{{ f }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if sp.best_manager %}
+    <div style="margin-top:14px;padding:10px;background:rgba(245,197,24,.08);border-radius:var(--radius-sm)">
+      <span style="font-size:13px">🏆 Кращий менеджер: <strong>{{ sp.best_manager }}</strong> — {{ sp.best_manager_reason }}</span>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ── Lesson insights ── #}
+  <div class="card">
+    <div class="section-title">🎓 Інсайти занять</div>
+    {% set li = d.lesson_insights %}
+    {% if li.avg_score is not none %}
+    <div style="margin-bottom:16px">
+      <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Середня оцінка</div>
+      <div style="font-size:24px;font-weight:700;color:{% if li.avg_score>=75 %}var(--green){% elif li.avg_score>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ li.avg_score }}%</div>
+    </div>
+    {% endif %}
+
+    {% if li.common_strengths %}
+    <div style="margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--green);margin-bottom:6px;text-transform:uppercase">✅ Сильні сторони</div>
+      {% for s in li.common_strengths %}
+      <div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border);color:var(--text-muted)">{{ s }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if li.common_weaknesses %}
+    <div>
+      <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:6px;text-transform:uppercase">⚠️ Слабкі місця</div>
+      {% for w in li.common_weaknesses %}
+      <div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border);color:var(--text-muted)">{{ w }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if li.best_trainer %}
+    <div style="margin-top:14px;padding:10px;background:rgba(245,197,24,.08);border-radius:var(--radius-sm)">
+      <span style="font-size:13px">🏆 Кращий тренер: <strong>{{ li.best_trainer }}</strong> — {{ li.best_trainer_reason }}</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Audience portrait ── #}
+<div class="card" style="margin-bottom:20px">
+  <div class="section-title">👤 Портрет цільової аудиторії</div>
+  {% set ap = d.audience_portrait %}
+  <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:20px;flex-wrap:wrap">
+    <div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;font-weight:600">Опис</div>
+      <p style="font-size:14px;line-height:1.6;color:var(--text)">{{ ap.description }}</p>
+      {% if ap.age_range %}
+      <div style="margin-top:8px;font-size:13px;color:var(--text-muted)">Вік: <strong style="color:var(--text)">{{ ap.age_range }}</strong></div>
+      {% endif %}
+    </div>
+    <div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;font-weight:600">🎯 Цілі</div>
+      {% for g in ap.main_goals %}
+      <div style="font-size:13px;padding:3px 0;color:var(--text-muted)">• {{ g }}</div>
+      {% endfor %}
+    </div>
+    <div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;font-weight:600">😣 Болі</div>
+      {% for p in ap.pain_points %}
+      <div style="font-size:13px;padding:3px 0;color:var(--text-muted)">• {{ p }}</div>
+      {% endfor %}
+    </div>
+    <div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;font-weight:600">💡 Фактори рішення</div>
+      {% for f in ap.decision_factors %}
+      <div style="font-size:13px;padding:3px 0;color:var(--text-muted)">• {{ f }}</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+
+  {# ── Top needs ── #}
+  <div class="card">
+    <div class="section-title">💬 Топ потреб клієнтів</div>
+    {% for n in d.top_needs %}
+    <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+        <span style="font-size:14px;font-weight:600">{{ n.need }}</span>
+        <span class="badge {% if n.frequency == 'висока' %}badge-red{% elif n.frequency == 'середня' %}badge-yellow{% else %}badge-gray{% endif %}" style="font-size:10px">
+          {{ n.frequency }}
+        </span>
+      </div>
+      <div style="font-size:13px;color:var(--text-muted)">{{ n.description }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# ── Top objections ── #}
+  <div class="card">
+    <div class="section-title">🚧 Топ заперечень</div>
+    {% for o in d.top_objections %}
+    <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+        <span style="font-size:14px;font-weight:600">{{ o.objection }}</span>
+        <span class="badge {% if o.frequency == 'висока' %}badge-red{% elif o.frequency == 'середня' %}badge-yellow{% else %}badge-gray{% endif %}" style="font-size:10px">
+          {{ o.frequency }}
+        </span>
+      </div>
+      <div style="font-size:13px;color:var(--text-muted)">💡 {{ o.how_to_handle }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{# ── Company recommendations ── #}
+{% if d.company_recommendations %}
+<div class="card">
+  <div class="section-title">🚀 Рекомендації для компанії</div>
+  <div style="display:flex;flex-direction:column;gap:12px">
+    {% for r in d.company_recommendations %}
+    <div style="padding:14px;border-radius:var(--radius-sm);background:var(--surface2);border-left:3px solid {% if r.priority=='висока' %}var(--red){% else %}var(--yellow){% endif %}">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <span class="badge {% if r.priority=='висока' %}badge-red{% else %}badge-yellow{% endif %}">{{ r.priority }}</span>
+        <span style="font-size:13px;font-weight:600;color:var(--text-muted);text-transform:uppercase">{{ r.area }}</span>
+      </div>
+      <div style="font-size:14px;font-weight:500;margin-bottom:4px">{{ r.recommendation }}</div>
+      <div style="font-size:13px;color:var(--text-muted)">Ефект: {{ r.expected_impact }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% endif %}{# end if insights #}
+
+<script>
+document.getElementById('generate-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('generate-btn');
+  const status = document.getElementById('generate-status');
+  btn.disabled = true;
+  btn.textContent = '⏳ Аналізуємо...';
+  status.textContent = 'Це займає ~30 секунд';
+
+  const from = document.getElementById('af-from').value;
+  const to = document.getElementById('af-to').value;
+
+  try {
+    const res = await fetch('/analytics/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date_from: from, date_to: to }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      const params = new URLSearchParams();
+      if (from) params.set('date_from', from);
+      if (to) params.set('date_to', to);
+      window.location.href = '/analytics' + (params.toString() ? '?' + params.toString() : '');
+    } else {
+      status.textContent = '❌ Помилка: ' + data.error;
+      btn.disabled = false;
+      btn.textContent = '✨ Згенерувати аналіз';
+    }
+  } catch(e) {
+    status.textContent = '❌ Помилка з\'єднання';
+    btn.disabled = false;
+    btn.textContent = '✨ Згенерувати аналіз';
+  }
+});
+</script>
+{% endblock %}

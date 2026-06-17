@@ -1,0 +1,20 @@
+# Environment
+.env
+
+# Database & uploads (хранятся на сервере, не в git)
+data.db
+uploads/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+/tmp/

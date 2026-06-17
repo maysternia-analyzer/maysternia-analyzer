@@ -1,0 +1,9 @@
+flask==3.0.3
+flask-login==0.6.3
+gunicorn==23.0.0
+python-dotenv==1.0.1
+openai>=2.0.0
+anthropic>=0.34.0
+werkzeug==3.0.3
+requests==2.34.2
+pydub==0.25.1

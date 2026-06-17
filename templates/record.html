@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+{% block title %}{{ record.person_name }} · {{ record.record_date }} — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+{% set a = record.get('analysis', {}) %}
+
+<div class="page-header">
+  <a href="{{ url_for('dashboard') }}" style="color:var(--text-muted);font-size:13px">← Дашборд</a>
+  <h1>
+    {{ '🎓' if record.record_type == 'lesson' else '💰' }}
+    {{ record.person_name }}
+    <span style="color:var(--text-muted);font-weight:400;font-size:16px">· {{ record.record_date }}</span>
+  </h1>
+  <span class="badge {{ 'badge-blue' if record.record_type == 'lesson' else 'badge-green' }}">
+    {{ 'Пробне заняття' if record.record_type == 'lesson' else 'Продаж менеджера' }}
+  </span>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+    <button class="btn btn-outline btn-sm" id="edit-meta-btn">✏️ Редагувати</button>
+    <form method="POST" action="{{ url_for('delete_record', record_id=record.id) }}"
+          onsubmit="return confirm('Видалити цей запис?');">
+      <button type="submit" class="btn btn-danger btn-sm">🗑 Видалити</button>
+    </form>
+  </div>
+</div>
+
+<form id="edit-meta-form" data-record-id="{{ record.id }}"
+      style="display:none;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px">
+  <div class="filter-group">
+    <label class="filter-label">Тип запису</label>
+    <select name="record_type" class="form-control" style="width:auto">
+      <option value="lesson" {{ 'selected' if record.record_type=='lesson' }}>Пробне заняття</option>
+      <option value="sales" {{ 'selected' if record.record_type=='sales' }}>Продаж менеджера</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label class="filter-label">Імʼя</label>
+    <input type="text" name="person_name" class="form-control" style="width:auto" value="{{ record.person_name }}">
+  </div>
+  <button type="submit" class="btn btn-primary btn-sm">Зберегти</button>
+</form>
+
+{# ── Processing state ── #}
+{% if record.status in ('processing', 'analyzing') %}
+<div class="card processing-card" id="processing-card" data-record-id="{{ record.id }}">
+  <div class="spinner"></div>
+  <div style="font-size:17px;font-weight:600;margin-bottom:8px" id="processing-status">
+    {% if record.status == 'processing' %}Транскрибуємо запис...{% else %}AI аналізує розмову...{% endif %}
+  </div>
+  <p style="color:var(--text-muted);font-size:14px">Це займає 1–3 хвилини. Сторінка оновиться автоматично.</p>
+</div>
+
+{% elif record.status == 'error' %}
+<div class="alert alert-error">
+  ⚠️ Сталась помилка під час обробки.<br>
+  <small>{{ record.transcription }}</small>
+</div>
+{% if record.transcription and not record.transcription.startswith('[ПОМИЛКА]') %}
+<div style="margin-top:16px">
+  <button class="btn btn-primary" id="reanalyze-btn" data-record-id="{{ record.id }}">
+    🔄 Проаналізувати повторно
+  </button>
+  <p style="margin-top:8px;font-size:13px;color:var(--text-muted)">Транскрипція є — можна запустити аналіз ще раз.</p>
+</div>
+{% else %}
+<div style="margin-top:16px">
+  <a href="{{ url_for('upload') }}" class="btn btn-primary">↑ Завантажити заново</a>
+</div>
+{% endif %}
+
+{% else %}
+
+{# ── Main layout ── #}
+<div class="detail-grid">
+
+  {# ── Left: checklist + recommendations ── #}
+  <div>
+
+    {# Score summary #}
+    {% if record.record_type == 'lesson' %}
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;gap:32px;align-items:center;flex-wrap:wrap">
+        <div>
+          <div class="stat-label">Загальна оцінка</div>
+          {% set s = a.overall_score|default(0) %}
+          <div class="stat-value" style="color:{% if s>=75 %}var(--green){% elif s>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ s }}%</div>
+        </div>
+        <div>
+          <div class="stat-label">Залученість учасників</div>
+          <div style="margin-top:6px">
+            {% set eng = a.engagement_level|default('') %}
+            {% if eng == 'Високий' %}<span class="badge badge-green">{{ eng }}</span>
+            {% elif eng == 'Середній' %}<span class="badge badge-yellow">{{ eng }}</span>
+            {% elif eng == 'Низький' %}<span class="badge badge-red">{{ eng }}</span>
+            {% endif %}
+          </div>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <div class="stat-label">Висновок</div>
+          <div style="font-size:14px;color:var(--text-muted);margin-top:4px">{{ a.summary|default('') }}</div>
+        </div>
+      </div>
+    </div>
+
+    {# Lesson checklist #}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">Чек-ліст заняття</div>
+      {% set items = [
+        ('greeting',          'Привітав та представився'),
+        ('safe_atmosphere',   'Створив безпечну атмосферу'),
+        ('structure_explained','Пояснив структуру заняття'),
+        ('practical_exercises','Практичні вправи з харизми'),
+        ('feedback_received', 'Отримав зворотній звʼязок'),
+        ('transition_to_manager','Логічний перехід до менеджера'),
+      ] %}
+      {% for key, label in items %}
+        {% set item = a.get(key, {}) %}
+        <div class="checklist-item">
+          <span class="check-icon">{{ '✅' if item.get('result') else '❌' }}</span>
+          <div>
+            <div class="check-title">{{ label }}</div>
+            {% if item.get('comment') %}
+            <div class="check-comment">{{ item.comment }}</div>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+    {# Strengths & improvements #}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">Що зроблено добре</div>
+      <p style="font-size:14px;color:var(--text-muted);line-height:1.7">{{ a.strengths|default('—') }}</p>
+      <div class="section-title" style="margin-top:20px">Що покращити</div>
+      <p style="font-size:14px;color:var(--text-muted);line-height:1.7">{{ a.improvements|default('—') }}</p>
+    </div>
+
+    {% else %}{# SALES #}
+
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;gap:32px;align-items:center;flex-wrap:wrap">
+        <div>
+          <div class="stat-label">Чек-ліст</div>
+          {% set s = a.checklist_score|default(0) %}
+          <div class="stat-value" style="color:{% if s>=75 %}var(--green){% elif s>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ s }}%</div>
+        </div>
+        <div>
+          <div class="stat-label">Шанс угоди</div>
+          <div style="margin-top:6px">
+            {% set dc = a.deal_chance|default('') %}
+            {% if dc == 'Високий' %}<span class="badge badge-green">{{ a.deal_chance_percent|default('') }}% · {{ dc }}</span>
+            {% elif dc == 'Середній' %}<span class="badge badge-yellow">{{ a.deal_chance_percent|default('') }}% · {{ dc }}</span>
+            {% else %}<span class="badge badge-red">{{ a.deal_chance_percent|default('') }}% · {{ dc }}</span>{% endif %}
+          </div>
+        </div>
+        <div>
+          <div class="stat-label">Теплота ліда</div>
+          <div style="margin-top:6px">
+            {% set lt = a.lead_temperature|default('') %}
+            {% if lt == 'Гарячий' %}<span class="badge badge-green">🔥 {{ lt }}</span>
+            {% elif lt == 'Теплий' %}<span class="badge badge-yellow">🌡️ {{ lt }}</span>
+            {% else %}<span class="badge badge-red">🧊 {{ lt }}</span>{% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {# Sales checklist #}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">Чек-ліст продажу</div>
+      {% set sitems = [
+        ('need_identified',   'Виявив потребу клієнта'),
+        ('presentation_done', 'Зробив презентацію курсу'),
+        ('objections_handled','Опрацював заперечення'),
+        ('urgency_used',      'Використав urgency / терміновість'),
+        ('next_step_offered', 'Запропонував наступний крок'),
+      ] %}
+      {% for key, label in sitems %}
+        {% set item = a.get(key, {}) %}
+        <div class="checklist-item">
+          <span class="check-icon">{{ '✅' if item.get('result') else '❌' }}</span>
+          <div>
+            <div class="check-title">{{ label }}</div>
+            {% set detail = item.get('details') or item.get('comment') %}
+            {% if detail %}
+            <div class="check-comment">{{ detail }}</div>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+    {# Next contact script #}
+    {% if a.next_contact_script %}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">📞 Скрипт наступного контакту</div>
+      <div class="script-box">{{ a.next_contact_script }}</div>
+    </div>
+    {% endif %}
+
+    {# Mistakes #}
+    {% if a.top_mistakes %}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">Найчастіші помилки</div>
+      <ul class="mistakes-list">
+        {% for m in a.top_mistakes %}
+        <li>{{ m }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {# Recommendations #}
+    {% if a.recommendations %}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">Рекомендації AI</div>
+      <p style="font-size:14px;color:var(--text-muted);line-height:1.7">{{ a.recommendations }}</p>
+    </div>
+    {% endif %}
+
+    {% endif %}{# end sales #}
+
+  </div>{# end left #}
+
+  {# ── Right: transcription + comment + actions ── #}
+  <div>
+
+    {# Actions #}
+    <div class="card card-sm" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-outline btn-sm" id="reanalyze-btn" data-record-id="{{ record.id }}">
+        🔄 Проаналізувати повторно
+      </button>
+    </div>
+
+    {# Audio player #}
+    {% if record.filename %}
+    {% set ext = record.filename.rsplit('.',1)[-1].lower() %}
+    <div class="card card-sm" style="margin-bottom:16px">
+      <div class="section-title">Аудіо</div>
+      {% if ext in ('mp4', 'mov', 'webm') %}
+      <video controls style="width:100%;border-radius:8px;max-height:200px;background:#000">
+        <source src="/uploads/{{ record.filename }}">
+      </video>
+      {% else %}
+      <audio controls style="width:100%">
+        <source src="/uploads/{{ record.filename }}">
+      </audio>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# Transcription #}
+    <div class="card card-sm" style="margin-bottom:16px">
+      <div class="section-title">Транскрипція</div>
+      <div class="transcription-box">{{ record.transcription or 'Транскрипція відсутня' }}</div>
+    </div>
+
+    {# Sale result — only for sales records #}
+    {% if record.record_type == 'sales' %}
+    <div class="card card-sm" style="margin-bottom:16px">
+      <div class="section-title">🏆 Результат продажу</div>
+      <div style="display:flex;gap:10px;margin-bottom:12px">
+        <button class="btn btn-sm sale-result-btn {% if record.sale_made == 1 %}btn-primary{% else %}btn-outline{% endif %}"
+                data-val="1" data-record-id="{{ record.id }}">✅ Продано</button>
+        <button class="btn btn-sm sale-result-btn {% if record.sale_made == 0 %}btn-danger{% else %}btn-outline{% endif %}"
+                data-val="0" data-record-id="{{ record.id }}">❌ Не продано</button>
+        {% if record.sale_made is not none %}
+        <button class="btn btn-sm btn-ghost" id="clear-sale-btn" data-record-id="{{ record.id }}">✕ Скинути</button>
+        {% endif %}
+      </div>
+      {% if record.sale_made == 1 %}
+      <div style="display:flex;align-items:center;gap:10px">
+        <input type="number" id="sale-amount-input" class="form-control"
+               style="width:160px" placeholder="Сума (₴)"
+               value="{{ record.sale_amount or '' }}">
+        <button class="btn btn-primary btn-sm" id="save-amount-btn" data-record-id="{{ record.id }}">Зберегти</button>
+      </div>
+      {% endif %}
+      {% if record.trainer_name %}
+      <div style="margin-top:10px;font-size:13px;color:var(--text-muted)">
+        Тренер: <strong style="color:var(--text)">{{ record.trainer_name }}</strong>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# Manager comment #}
+    <div class="card card-sm">
+      <div class="section-title">💬 Коментар керівника</div>
+      <textarea class="form-control" id="comment-field" rows="4"
+                placeholder="Додайте власний коментар або нотатки...">{{ record.manager_comment or '' }}</textarea>
+      <button class="btn btn-primary btn-sm" style="margin-top:10px" id="save-comment-btn" data-record-id="{{ record.id }}">
+        Зберегти коментар
+      </button>
+    </div>
+
+  </div>
+
+</div>{# end detail-grid #}
+
+{% endif %}{# end status check #}
+{% endblock %}
