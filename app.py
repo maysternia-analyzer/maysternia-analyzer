@@ -588,6 +588,35 @@ def _reanalyze(record_id, transcription, record_type):
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
+def _seed_zoom_processed():
+    """On first startup, mark all existing Zoom recordings as processed so poller skips them."""
+    try:
+        from services.zoom import get_access_token
+        from database import is_zoom_file_processed, mark_zoom_file_processed
+        from datetime import datetime, timedelta
+        import requests as _req
+        token = get_access_token()
+        date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        meetings = _req.get(
+            "https://api.zoom.us/v2/users/me/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"page_size": 100, "from": date_from},
+            timeout=15,
+        ).json().get("meetings", [])
+        count = 0
+        for m in meetings:
+            for f in m.get("recording_files", []):
+                if f["file_type"] not in ("MP4", "M4A"):
+                    continue
+                fid = str(f["id"])
+                if not is_zoom_file_processed(fid):
+                    mark_zoom_file_processed(fid)
+                    count += 1
+        print(f"[Startup] Помічено як оброблені {count} старих записів Zoom", flush=True)
+    except Exception as e:
+        print(f"[Startup] Помилка seed: {e}", flush=True)
+
+
 def _run_startup():
     """Runs once at startup regardless of how the app is launched (gunicorn or dev)."""
     init_db()
@@ -596,6 +625,7 @@ def _run_startup():
         time.sleep(5)
         print("[Startup] Перевіряємо нові записи Zoom...", flush=True)
         try:
+            _seed_zoom_processed()
             n = poll_once()
             print(f"[Startup] Нових записів: {n}", flush=True)
         except Exception as e:
