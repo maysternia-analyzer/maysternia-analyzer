@@ -43,14 +43,41 @@ def _get_fresh_download_url(zoom_file_id: str, token: str) -> str | None:
     return None
 
 
+def _build_url_with_token(url: str, token: str) -> str:
+    """Append access_token as query param — survives CDN redirects unlike Bearer header."""
+    from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+    parsed = urlparse(url)
+    params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+    params["access_token"] = token
+    return urlunparse(parsed._replace(query=urlencode(params)))
+
+
+def _validate_file(path: Path) -> None:
+    """Verify downloaded file is a valid media file using ffmpeg."""
+    import subprocess
+    ffmpeg = "/root/.nix-profile/bin/ffmpeg"
+    for candidate in [ffmpeg, "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]:
+        if subprocess.run(["test", "-x", candidate], capture_output=True).returncode == 0:
+            result = subprocess.run(
+                [candidate, "-v", "error", "-i", str(path), "-f", "null", "-t", "1", "-"],
+                capture_output=True, timeout=30,
+            )
+            if result.returncode not in (0, 1):
+                # Read first 200 bytes to detect HTML
+                with open(path, "rb") as f:
+                    head = f.read(200)
+                hint = " (схоже на HTML-відповідь)" if b"<html" in head.lower() or b"<!doc" in head.lower() else ""
+                path.unlink(missing_ok=True)
+                raise RuntimeError(f"Завантажений файл пошкоджений або не є медіафайлом{hint}")
+            return  # valid
+    # No ffmpeg — skip validation
+
+
 def download_recording(download_url: str, filename: str) -> str:
     save_path = UPLOAD_FOLDER / filename
     token = get_access_token()
 
-    def _bad_resp(r):
-        return r.status_code == 401 or "text/html" in r.headers.get("content-type", "")
-
-    # If webhook_download URL — get fresh API URL instead (more reliable)
+    # Resolve fresh API URL if webhook URL
     if "webhook_download" in download_url:
         zoom_file_id = filename.replace("zoom_", "").rsplit(".", 1)[0]
         fresh_url = _get_fresh_download_url(zoom_file_id, token)
@@ -58,23 +85,16 @@ def download_recording(download_url: str, filename: str) -> str:
             print(f"[Download] Використовуємо API URL замість webhook URL", flush=True)
             download_url = fresh_url
 
-    # Download with Bearer token
-    resp = requests.get(
-        download_url,
-        headers={"Authorization": f"Bearer {token}"},
-        stream=True, timeout=300, allow_redirects=True,
-    )
+    # Always use token as query param — survives CDN redirects (Bearer header is stripped)
+    url_with_token = _build_url_with_token(download_url, token)
 
-    # Fallback: token as query param
-    if _bad_resp(resp):
-        from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
-        parsed = urlparse(download_url)
-        params = parse_qs(parsed.query)
-        params.pop("access_token", None)
-        clean_url = urlunparse(parsed._replace(query=urlencode({k: v[0] for k, v in params.items()})))
-        url_with_token = f"{clean_url}{'&' if '?' in clean_url else '?'}access_token={token}"
+    resp = requests.get(url_with_token, stream=True, timeout=300, allow_redirects=True)
+
+    # If that fails, try Bearer header as fallback
+    if resp.status_code == 401:
+        print(f"[Download] query param не спрацював, пробуємо Bearer header", flush=True)
         resp = requests.get(
-            url_with_token,
+            download_url,
             headers={"Authorization": f"Bearer {token}"},
             stream=True, timeout=300, allow_redirects=True,
         )
@@ -83,7 +103,7 @@ def download_recording(download_url: str, filename: str) -> str:
 
     content_type = resp.headers.get("content-type", "")
     if "text/html" in content_type or "text/xml" in content_type:
-        raise RuntimeError(f"Zoom повернув HTML замість відео (можливо, посилання застаріло). Content-Type: {content_type}")
+        raise RuntimeError(f"Zoom повернув HTML замість медіафайлу. Content-Type: {content_type}")
 
     with open(save_path, "wb") as f:
         for chunk in resp.iter_content(chunk_size=65536):
@@ -93,9 +113,13 @@ def download_recording(download_url: str, filename: str) -> str:
     size = save_path.stat().st_size
     if size < 10000:
         save_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Файл завантажився порожнім ({size} байт) — посилання застаріло")
+        raise RuntimeError(f"Файл завантажився порожнім ({size} байт) — посилання застаріло або немає доступу")
 
     print(f"[Download] Збережено: {save_path.name} | {size/1024/1024:.1f} MB", flush=True)
+
+    # Validate file is real media
+    _validate_file(save_path)
+
     return str(save_path)
 
 
