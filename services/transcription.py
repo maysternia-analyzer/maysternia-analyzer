@@ -57,12 +57,18 @@ def _compress(ff: str, src: Path, dst: Path):
 
 
 def _split_and_transcribe(client, ff: str, path: Path) -> str:
-    duration_raw = subprocess.check_output(
-        [ff, "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-        stderr=subprocess.DEVNULL,
-    )
-    total_sec = float(duration_raw.strip())
+    try:
+        duration_raw = subprocess.check_output(
+            [ff, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            stderr=subprocess.DEVNULL,
+        )
+        total_sec = float(duration_raw.strip())
+    except Exception as e:
+        print(f"[Transcribe] ffmpeg не може прочитати файл: {e} — пробуємо напряму до Whisper", flush=True)
+        if path.stat().st_size <= MAX_BYTES:
+            return _transcribe_direct(client, path)
+        raise RuntimeError(f"ffmpeg не може прочитати файл і він завеликий для Whisper: {e}")
     chunk_sec = 600  # 10 minutes per chunk — safe for any file type (audio or video)
 
     texts, start, idx = [], 0, 0
