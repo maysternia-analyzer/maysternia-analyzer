@@ -53,24 +53,30 @@ def _build_url_with_token(url: str, token: str) -> str:
 
 
 def _validate_file(path: Path) -> None:
-    """Verify downloaded file is a valid media file using ffmpeg."""
-    import subprocess
-    ffmpeg = "/root/.nix-profile/bin/ffmpeg"
-    for candidate in [ffmpeg, "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg"]:
-        if subprocess.run(["test", "-x", candidate], capture_output=True).returncode == 0:
-            result = subprocess.run(
-                [candidate, "-v", "error", "-i", str(path), "-f", "null", "-t", "1", "-"],
-                capture_output=True, timeout=30,
-            )
-            if result.returncode not in (0, 1):
-                # Read first 200 bytes to detect HTML
-                with open(path, "rb") as f:
-                    head = f.read(200)
-                hint = " (схоже на HTML-відповідь)" if b"<html" in head.lower() or b"<!doc" in head.lower() else ""
-                path.unlink(missing_ok=True)
-                raise RuntimeError(f"Завантажений файл пошкоджений або не є медіафайлом{hint}")
-            return  # valid
-    # No ffmpeg — skip validation
+    """Verify downloaded file is real media using magic bytes — fast, no ffmpeg needed."""
+    with open(path, "rb") as f:
+        head = f.read(512)
+
+    # Detect HTML / XML error response
+    stripped = head.lstrip()
+    if stripped.startswith(b"<") or b"<html" in head.lower() or b"<?xml" in head.lower():
+        path.unlink(missing_ok=True)
+        # Try to extract error message from HTML
+        text = head.decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Zoom повернув HTML замість медіафайлу — проблема з авторизацією. Відповідь: {text[:200]}")
+
+    # Valid media magic bytes:
+    # M4A/MP4: bytes 4-7 == b'ftyp'
+    # MP3: starts with 0xFF 0xFB / 0xFF 0xF3 / 0xFF 0xF2 / ID3
+    # WAV: starts with RIFF
+    is_mp4_m4a = len(head) >= 8 and head[4:8] == b"ftyp"
+    is_mp3 = head[:3] == b"ID3" or (len(head) >= 2 and head[0] == 0xFF and head[1] in (0xFB, 0xF3, 0xF2, 0xFA))
+    is_wav = head[:4] == b"RIFF"
+    is_webm = head[:4] == b"\x1a\x45\xdf\xa3"
+
+    if not (is_mp4_m4a or is_mp3 or is_wav or is_webm):
+        path.unlink(missing_ok=True)
+        raise RuntimeError(f"Завантажений файл не є медіафайлом (перші байти: {head[:16].hex()})")
 
 
 def download_recording(download_url: str, filename: str) -> str:

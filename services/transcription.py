@@ -65,10 +65,9 @@ def _split_and_transcribe(client, ff: str, path: Path) -> str:
         )
         total_sec = float(duration_raw.strip())
     except Exception as e:
-        print(f"[Transcribe] ffmpeg не може прочитати файл: {e} — пробуємо напряму до Whisper", flush=True)
-        if path.stat().st_size <= MAX_BYTES:
-            return _transcribe_direct(client, path)
-        raise RuntimeError(f"ffmpeg не може прочитати файл і він завеликий для Whisper: {e}")
+        print(f"[Transcribe] ffmpeg не може визначити тривалість: {e} — пробуємо Whisper напряму", flush=True)
+        # Let Whisper try directly — it handles more formats than ffmpeg duration probe
+        return _transcribe_direct(client, path)
     chunk_sec = 600  # 10 minutes per chunk — safe for any file type (audio or video)
 
     texts, start, idx = [], 0, 0
