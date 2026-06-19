@@ -111,17 +111,11 @@ def transcribe(file_path: str) -> str:
     file_size = path.stat().st_size
     ext = path.suffix.lower()
 
-    # M4A/MP3 ≤25MB — Whisper reads natively, no ffmpeg needed
-    if file_size <= MAX_BYTES and ext in (".m4a", ".mp3", ".mp4", ".wav", ".webm"):
-        print(f"[Transcribe] Відправляємо напряму до Whisper ({size_mb:.1f} MB)", flush=True)
-        return _transcribe_direct(client, path)
-
-    # Larger files need ffmpeg to chunk
     ff = _ffmpeg_path()
-    if ff:
-        print(f"[Transcribe] ffmpeg знайдено: {ff}", flush=True)
 
-        # Try compress → send/split
+    # Always try ffmpeg compression first if available — converts to small MP3
+    if ff:
+        print(f"[Transcribe] ffmpeg знайдено: {ff}, стискаємо...", flush=True)
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 compressed = Path(tmp) / "audio.mp3"
@@ -133,9 +127,14 @@ def transcribe(file_path: str) -> str:
                 else:
                     return _split_and_transcribe(client, ff, compressed)
         except Exception as e:
-            print(f"[Transcribe] ffmpeg стиснення не вдалося: {e} — нарізаємо оригінал", flush=True)
-            return _split_and_transcribe(client, ff, path)
+            print(f"[Transcribe] ffmpeg стиснення не вдалося: {e}", flush=True)
+
+    # ffmpeg unavailable or failed — try Whisper directly if file fits
+    if file_size <= MAX_BYTES:
+        print(f"[Transcribe] Відправляємо оригінал напряму до Whisper ({size_mb:.1f} MB)", flush=True)
+        return _transcribe_direct(client, path)
 
     raise RuntimeError(
-        f"Файл {size_mb:.1f} МБ перевищує ліміт 25 МБ і ffmpeg недоступний."
+        f"Файл {size_mb:.1f} МБ перевищує ліміт Whisper і ffmpeg не зміг стиснути. "
+        f"Спробуйте завантажити файл меншого розміру вручну."
     )
