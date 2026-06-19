@@ -57,48 +57,49 @@ def poll_once():
 
         f = best
         file_id = str(f["id"])
-        filename = f"zoom_{file_id}.mp4"
+        ext = f.get("file_extension", "mp4").lower()
+        filename = f"zoom_{file_id}.{ext}"
+
         if is_zoom_file_processed(file_id):
             continue
 
-            print(f"[Poller] Новий запис: {m['topic']} | {m['start_time'][:10]}")
-            start_dt = m["start_time"]
-            record_time = start_dt[11:16] if len(start_dt) > 10 else ""
-            record_id = create_record(
-                start_dt[:10], "sales",
-                m.get("host_email", "").split("@")[0] or "Невідомо",
-                filename,
-                record_time=record_time,
+        print(f"[Poller] Новий запис: {m['topic']} | {m['start_time'][:10]}")
+        start_dt = m["start_time"]
+        record_time = start_dt[11:16] if len(start_dt) > 10 else ""
+        record_id = create_record(
+            start_dt[:10], "sales",
+            m.get("host_email", "").split("@")[0] or "Невідомо",
+            filename,
+            record_time=record_time,
+        )
+        mark_zoom_file_processed(file_id)
+        update_record(record_id, status="processing")
+
+        try:
+            path = download_recording(f["download_url"], filename)
+            text = transcribe(path)
+            update_record(record_id, transcription=text, status="analyzing")
+
+            is_breakout = "breakout" in f.get("recording_type", "").lower()
+            det = detect_type_and_name(
+                m["topic"], m["duration"], is_breakout,
+                m.get("host_email", "").split("@")[0], text[:2000],
             )
-            update_record(record_id, status="processing")
+            from database import get_db, _p
+            conn = get_db()
+            cur = conn.cursor()
+            p = _p()
+            cur.execute(f"UPDATE records SET record_type={p}, person_name={p} WHERE id={p}",
+                        (det["record_type"], det["person_name"], record_id))
+            conn.commit(); cur.close(); conn.close()
 
-            try:
-                path = download_recording(f["download_url"], filename)
-                text = transcribe(path)
-                update_record(record_id, transcription=text, status="analyzing")
-
-                is_breakout = "breakout" in f.get("recording_type", "").lower()
-                det = detect_type_and_name(
-                    m["topic"], m["duration"], is_breakout,
-                    m.get("host_email", "").split("@")[0], text[:2000],
-                )
-                from database import get_db, _p
-                conn = get_db()
-                cur = conn.cursor()
-                p = _p()
-                cur.execute(f"UPDATE records SET record_type={p}, person_name={p} WHERE id={p}",
-                            (det["record_type"], det["person_name"], record_id))
-                conn.commit(); cur.close(); conn.close()
-
-                analysis = analyze(det["record_type"], text)
-                update_record(record_id, analysis_json=analysis, status="done")
-                print(f"[Poller] ✅ ID:{record_id} | {det['record_type']} | {det['person_name']}")
-                mark_zoom_file_processed(file_id)
-                new_count += 1
-            except Exception as e:
-                print(f"[Poller] ❌ Помилка: {e}")
-                update_record(record_id,
-                              transcription=f"[ПОМИЛКА]: {e}", status="error")
+            analysis = analyze(det["record_type"], text)
+            update_record(record_id, analysis_json=analysis, status="done")
+            print(f"[Poller] ✅ ID:{record_id} | {det['record_type']} | {det['person_name']}")
+            new_count += 1
+        except Exception as e:
+            print(f"[Poller] ❌ Помилка: {e}")
+            update_record(record_id, transcription=f"[ПОМИЛКА]: {e}", status="error")
 
     return new_count
 
