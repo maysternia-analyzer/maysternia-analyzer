@@ -129,44 +129,85 @@ def download_recording(download_url: str, filename: str) -> str:
     return str(save_path)
 
 
+def download_transcript_vtt(download_url: str) -> str:
+    """Download Zoom VTT transcript and convert to plain text."""
+    token = get_access_token()
+    url_with_token = _build_url_with_token(download_url, token)
+    resp = requests.get(url_with_token, timeout=60, allow_redirects=True)
+    resp.raise_for_status()
+    vtt_text = resp.text
+
+    # Parse VTT → plain text (strip timestamps and metadata)
+    lines = []
+    for line in vtt_text.splitlines():
+        line = line.strip()
+        if not line or line == "WEBVTT" or "-->" in line or line.isdigit():
+            continue
+        # Remove speaker tags like <v Speaker>
+        import re
+        line = re.sub(r"<v [^>]+>", "", line)
+        line = re.sub(r"<[^>]+>", "", line)  # remove any other HTML tags
+        if line:
+            lines.append(line)
+    return " ".join(lines)
+
+
 def parse_webhook_payload(payload: dict) -> list[dict]:
     """
-    Extract all recordings from a Zoom webhook payload.
-    Returns list of dicts with: filename, download_url, topic,
-    start_time, duration, host_name, participants, is_breakout
+    Extract recording info from a Zoom webhook payload.
+    Prefers TRANSCRIPT (VTT) if available — instant, no Whisper needed.
+    Falls back to M4A audio → active_speaker MP4 → any MP4.
     """
     recording = payload.get("payload", {}).get("object", {})
     topic = recording.get("topic", "")
-    start_time = recording.get("start_time", "")  # full ISO string
+    start_time = recording.get("start_time", "")
     duration = recording.get("duration", 0)
     host_email = recording.get("host_email", "")
     host_name = _email_to_name(host_email)
+    all_files = recording.get("recording_files", [])
+    is_breakout = "breakout" in topic.lower()
 
-    # Pick best file: prefer M4A audio (small, fast), fallback to active_speaker MP4, then any MP4
-    files = [f for f in recording.get("recording_files", [])
-             if f.get("file_type") in ("MP4", "M4A") and f.get("status") == "completed"]
+    # Try TRANSCRIPT first — Zoom already transcribed, just download VTT
+    transcript_file = next(
+        (f for f in all_files
+         if f.get("file_type") == "TRANSCRIPT" and f.get("status") == "completed"),
+        None
+    )
+    if transcript_file:
+        file_id = transcript_file.get("id", str(int(time.time())))
+        return [{
+            "filename": f"zoom_{file_id}.vtt",
+            "download_url": transcript_file.get("download_url", ""),
+            "file_type": "TRANSCRIPT",
+            "topic": topic,
+            "start_time": start_time,
+            "duration": duration,
+            "host_name": host_name,
+            "host_email": host_email,
+            "is_breakout": is_breakout,
+            "recording_type": "transcript",
+        }]
 
-    best = next((f for f in files if f.get("file_type") == "M4A"), None)
+    # Fallback: audio/video file → Whisper
+    media_files = [f for f in all_files
+                   if f.get("file_type") in ("MP4", "M4A") and f.get("status") == "completed"]
+    best = next((f for f in media_files if f.get("file_type") == "M4A"), None)
     if not best:
-        for f in files:
-            if f.get("file_type") == "MP4" and "active_speaker" in f.get("recording_type", "").lower():
-                best = f
-                break
+        for f in media_files:
+            if "active_speaker" in f.get("recording_type", "").lower():
+                best = f; break
     if not best:
-        best = next((f for f in files if f.get("file_type") == "MP4"), None)
-
+        best = next((f for f in media_files if f.get("file_type") == "MP4"), None)
     if not best:
         return []
 
     rec_type = best.get("recording_type", "")
-    is_breakout = "breakout" in rec_type.lower() or "breakout" in topic.lower()
     ext = best.get("file_extension", "mp4").lower()
     file_id = best.get("id", str(int(time.time())))
-    filename = f"zoom_{file_id}.{ext}"
-
     return [{
-        "filename": filename,
+        "filename": f"zoom_{file_id}.{ext}",
         "download_url": best.get("download_url", ""),
+        "file_type": best.get("file_type", "MP4"),
         "topic": topic,
         "start_time": start_time,
         "duration": duration,

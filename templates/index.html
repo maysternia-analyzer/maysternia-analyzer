@@ -80,10 +80,43 @@
   {% endif %}
 </div>
 
+<form method="get" action="{{ url_for('dashboard') }}">
+  <div class="filters">
+    <div class="filter-group">
+      <label class="filter-label">Тип</label>
+      <select name="type" onchange="this.form.submit()">
+        <option value="">Всі записи</option>
+        <option value="lesson" {{ 'selected' if filters.type=='lesson' }}>Пробне заняття</option>
+        <option value="sales" {{ 'selected' if filters.type=='sales' }}>Продаж менеджера</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">Імʼя</label>
+      <select name="person" onchange="this.form.submit()">
+        <option value="">Всі люди</option>
+        {% for p in people %}
+        <option value="{{ p }}" {{ 'selected' if filters.person==p }}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">Від</label>
+      <input type="date" name="date_from" value="{{ filters.date_from }}" onchange="this.form.submit()">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">До</label>
+      <input type="date" name="date_to" value="{{ filters.date_to }}" onchange="this.form.submit()">
+    </div>
+    {% if filters.type or filters.person or filters.date_from or filters.date_to %}
+    <a href="{{ url_for('dashboard') }}" class="btn btn-ghost btn-sm" style="align-self:flex-end">✕ Скинути</a>
+    {% endif %}
+  </div>
+</form>
+
 {# ── Recent records table ── #}
 <div class="card" style="padding:0;overflow:hidden">
   <div style="padding:16px 20px 0;display:flex;align-items:center;justify-content:space-between">
-    <div class="section-title" style="margin:0">Останні записи</div>
+    <div class="section-title" style="margin:0">Всі записи</div>
     <div style="display:flex;gap:12px">
       <a href="{{ url_for('lessons_page') }}" class="btn btn-outline btn-sm">🎓 Всі заняття</a>
       <a href="{{ url_for('sales_page') }}" class="btn btn-outline btn-sm">💰 Всі продажі</a>
@@ -97,13 +130,17 @@
           <th data-sort="0">Дата та час</th>
           <th>Тип</th>
           <th data-sort="2">Імʼя</th>
-          <th data-sort="3">Оцінка</th>
-          <th data-sort="4">Шанс / Рівень</th>
+          <th data-sort="3">Шанс угоди</th>
+          <th data-sort="4">Чек-ліст</th>
+          <th>Потреба</th>
+          <th>Презентація</th>
+          <th>Заперечення</th>
+          <th>Наступна дія</th>
           <th>Статус</th>
         </tr>
       </thead>
       <tbody>
-        {% for r in records[:30] %}
+        {% for r in records %}
         {% set a = r.get('analysis', {}) %}
         <tr class="clickable" data-href="{{ url_for('record_detail', record_id=r.id) }}">
           <td style="white-space:nowrap" data-val="{{ r.record_date }}">
@@ -118,23 +155,6 @@
             {% endif %}
           </td>
           <td style="font-weight:500">{{ r.person_name }}</td>
-          {% if r.record_type == 'sales' and a.checklist_score is defined %}
-            {% set s = a.checklist_score %}
-            <td data-val="{{ s }}">
-              <div class="score-bar">
-                <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ s }}"></div></div>
-                <span class="score-bar-num" style="color:{% if s>=75 %}var(--green){% elif s>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ s }}%</span>
-              </div>
-            </td>
-          {% elif r.record_type == 'lesson' and a.overall_score is defined %}
-            {% set s = a.overall_score %}
-            <td data-val="{{ s }}">
-              <div class="score-bar">
-                <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ s }}"></div></div>
-                <span class="score-bar-num" style="color:{% if s>=75 %}var(--green){% elif s>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ s }}%</span>
-              </div>
-            </td>
-          {% else %}<td data-val="-1">—</td>{% endif %}
           {% if r.record_type == 'sales' and a.deal_chance %}
             {% set pct = a.deal_chance_percent|default(0) %}
             <td data-val="{{ pct }}">
@@ -150,6 +170,29 @@
               {% else %}<span class="badge badge-red">{{ a.engagement_level }}</span>{% endif %}
             </td>
           {% else %}<td data-val="0">—</td>{% endif %}
+          {% if r.record_type == 'sales' and a.checklist_score is defined %}
+            {% set s = a.checklist_score %}
+          {% elif r.record_type == 'lesson' and a.overall_score is defined %}
+            {% set s = a.overall_score %}
+          {% else %}
+            {% set s = none %}
+          {% endif %}
+          {% if s is not none %}
+            <td data-val="{{ s }}">
+              <div class="score-bar">
+                <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ s }}"></div></div>
+                <span class="score-bar-num" style="color:{% if s>=75 %}var(--green){% elif s>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ s }}%</span>
+              </div>
+            </td>
+          {% else %}<td data-val="-1">—</td>{% endif %}
+          {% if r.record_type == 'sales' %}
+            <td>{{ '✅' if a.get('need_identified', {}).get('result') else '❌' if a.need_identified is defined else '—' }}</td>
+            <td>{{ '✅' if a.get('presentation_done', {}).get('result') else '❌' if a.presentation_done is defined else '—' }}</td>
+            <td>{{ '✅' if a.get('objections_handled', {}).get('result') else '❌' if a.objections_handled is defined else '—' }}</td>
+            <td>{{ '✅' if a.get('next_step_offered', {}).get('result') else '❌' if a.next_step_offered is defined else '—' }}</td>
+          {% else %}
+            <td colspan="4" style="color:var(--text-muted)">Пробне заняття</td>
+          {% endif %}
           <td>
             {% if r.status == 'done' %}<span class="badge badge-green">Готово</span>
             {% elif r.status in ('processing','analyzing') %}<span class="badge badge-yellow">Обробка</span>

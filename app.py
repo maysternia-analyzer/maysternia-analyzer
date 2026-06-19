@@ -4,6 +4,7 @@ import time
 import threading
 import webbrowser
 from pathlib import Path
+from datetime import date
 from flask import Flask, render_template, request, redirect, url_for, jsonify, abort, send_from_directory, flash
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -75,6 +76,11 @@ def process_record_async(record_id, file_path, record_type):
         update_record(record_id, transcription=f"[ПОМИЛКА]: {e}", status="error")
 
 
+def _zoom_configured():
+    required = ("ZOOM_ACCOUNT_ID", "ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET")
+    return all(os.environ.get(key) for key in required)
+
+
 # ── Auth routes ───────────────────────────────────────────────────────────────
 
 @app.route("/setup", methods=["GET", "POST"])
@@ -102,6 +108,8 @@ def setup():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    if not get_all_users():
+        return redirect(url_for("setup"))
     if current_user.is_authenticated:
         return redirect(url_for("dashboard"))
     error = None
@@ -265,12 +273,26 @@ def _build_stats(records):
 @app.route("/")
 @login_required
 def dashboard():
-    all_records = get_all_records()
+    record_type = request.args.get("type", "")
+    person_name = request.args.get("person", "")
+    date_from = request.args.get("date_from", "")
+    date_to = request.args.get("date_to", "")
+    all_records = get_all_records(
+        record_type=record_type or None,
+        person_name=person_name or None,
+        date_from=date_from or None,
+        date_to=date_to or None,
+    )
     stats = _build_stats(all_records)
-    managers = get_person_names("sales")
-    trainers = get_person_names("lesson")
+    people = get_person_names()
     return render_template("index.html", records=all_records, stats=stats,
-                           managers=managers, trainers=trainers)
+                           people=people,
+                           filters={
+                               "type": record_type,
+                               "person": person_name,
+                               "date_from": date_from,
+                               "date_to": date_to,
+                           })
 
 
 @app.route("/lessons")
@@ -386,7 +408,7 @@ def upload():
 
         return redirect(url_for("record_detail", record_id=record_id))
 
-    return render_template("upload.html")
+    return render_template("upload.html", today=date.today().isoformat())
 
 
 @app.route("/record/<int:record_id>")
@@ -629,25 +651,39 @@ def zoom_webhook():
 
 def _process_zoom_recording(rec: dict, record_id: int):
     """Download a Zoom recording and run the full analysis pipeline."""
-    print(f"[Zoom] Обробляємо ID:{record_id} | {rec['topic']}")
+    from services.zoom import download_transcript_vtt
+    print(f"[Zoom] Обробляємо ID:{record_id} | {rec['topic']} | type={rec.get('file_type','?')}")
 
-    try:
-        print(f"[Zoom] Завантажуємо: {rec['filename']}")
-        file_path = download_recording(rec["download_url"], rec["filename"])
-        print(f"[Zoom] Файл збережено: {file_path}")
-    except Exception as e:
-        print(f"[Zoom] ❌ Помилка завантаження: {e}")
-        update_record(record_id, transcription=f"[ПОМИЛКА завантаження]: {e}", status="error")
-        return
+    # Fast path: Zoom transcript (VTT) — no Whisper needed
+    if rec.get("file_type") == "TRANSCRIPT":
+        try:
+            print(f"[Zoom] Використовуємо транскрипцію Zoom (VTT)", flush=True)
+            text = download_transcript_vtt(rec["download_url"])
+            print(f"[Zoom] VTT транскрипція: {len(text)} символів", flush=True)
+            update_record(record_id, transcription=text, status="analyzing")
+        except Exception as e:
+            print(f"[Zoom] ❌ Помилка VTT: {e}", flush=True)
+            update_record(record_id, transcription=f"[ПОМИЛКА VTT]: {e}", status="error")
+            return
+    else:
+        # Slow path: download audio/video → Whisper
+        try:
+            print(f"[Zoom] Завантажуємо: {rec['filename']}")
+            file_path = download_recording(rec["download_url"], rec["filename"])
+            print(f"[Zoom] Файл збережено: {file_path}")
+        except Exception as e:
+            print(f"[Zoom] ❌ Помилка завантаження: {e}")
+            update_record(record_id, transcription=f"[ПОМИЛКА завантаження]: {e}", status="error")
+            return
 
-    try:
-        text = transcribe(file_path)
-        print(f"[Zoom] Транскрипція: {len(text)} символів")
-        update_record(record_id, transcription=text, status="analyzing")
-    except Exception as e:
-        print(f"[Zoom] ❌ Помилка транскрипції: {e}")
-        update_record(record_id, transcription=f"[ПОМИЛКА транскрипції]: {e}", status="error")
-        return
+        try:
+            text = transcribe(file_path)
+            print(f"[Zoom] Транскрипція: {len(text)} символів")
+            update_record(record_id, transcription=text, status="analyzing")
+        except Exception as e:
+            print(f"[Zoom] ❌ Помилка транскрипції: {e}")
+            update_record(record_id, transcription=f"[ПОМИЛКА транскрипції]: {e}", status="error")
+            return
 
     try:
         detection = detect_type_and_name(
@@ -772,6 +808,10 @@ def _seed_zoom_processed():
 def _run_startup():
     """Runs once at startup regardless of how the app is launched (gunicorn or dev)."""
     init_db()
+    if not _zoom_configured():
+        print("[Startup] Zoom-синхронізацію вимкнено: ZOOM_* ключі не задані", flush=True)
+        return
+
     start_background_poller(interval_minutes=5)
     def _startup_poll():
         time.sleep(5)
