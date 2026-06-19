@@ -186,6 +186,20 @@ def admin_webhook_logs():
     return jsonify(logs)
 
 
+@app.route("/debug/zoom-state")
+def debug_zoom_state():
+    """Temporary debug endpoint — shows zoom_processed and webhook_log."""
+    from database import get_db, get_webhook_logs
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT zoom_file_id, processed_at FROM zoom_processed ORDER BY processed_at DESC LIMIT 30")
+    processed = [{"file_id": r[0], "at": r[1]} for r in cur.fetchall()]
+    cur.close()
+    conn.close()
+    logs = get_webhook_logs(50)
+    return jsonify({"zoom_processed": processed, "webhook_logs": logs})
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 def _build_stats(records):
