@@ -118,13 +118,17 @@ def transcribe(file_path: str) -> str:
                 else:
                     return _split_and_transcribe(client, ff, compressed)
         except Exception as e:
-            print(f"[Transcribe] ffmpeg помилка: {e} — пробуємо без стиснення", flush=True)
+            print(f"[Transcribe] ffmpeg стиснення не вдалося: {e} — нарізаємо оригінал на чанки", flush=True)
+            try:
+                return _split_and_transcribe(client, ff, path)
+            except Exception as e2:
+                print(f"[Transcribe] нарізка оригіналу не вдалася: {e2}", flush=True)
 
-    # Fallback: send original file directly
+    # Fallback: send original file directly (only for small files)
     if path.stat().st_size <= MAX_BYTES:
         print(f"[Transcribe] Відправляємо оригінал напряму до Whisper", flush=True)
         return _transcribe_direct(client, path)
     else:
         raise RuntimeError(
-            f"Файл {size_mb:.1f} МБ перевищує ліміт 25 МБ і ffmpeg не зміг стиснути."
+            f"Файл {size_mb:.1f} МБ перевищує ліміт 25 МБ і ffmpeg не зміг обробити файл."
         )
