@@ -42,17 +42,16 @@ def poll_once():
 
     new_count = 0
     for m in meetings:
-        # Pick best file per meeting: active_speaker MP4 > first MP4 > M4A
+        # Pick best file per meeting: M4A audio > active_speaker MP4 > first MP4
         files = [f for f in m.get("recording_files", [])
                  if f["file_type"] in ("MP4", "M4A") and f.get("status") == "completed"]
-        best = None
-        for f in files:
-            if f["file_type"] == "MP4" and "active_speaker" in f.get("recording_type", "").lower():
-                best = f; break
+        best = next((f for f in files if f["file_type"] == "M4A"), None)
+        if not best:
+            for f in files:
+                if f["file_type"] == "MP4" and "active_speaker" in f.get("recording_type", "").lower():
+                    best = f; break
         if not best:
             best = next((f for f in files if f["file_type"] == "MP4"), None)
-        if not best:
-            best = next((f for f in files), None)
         if not best:
             continue
 

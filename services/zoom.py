@@ -112,20 +112,18 @@ def parse_webhook_payload(payload: dict) -> list[dict]:
     host_email = recording.get("host_email", "")
     host_name = _email_to_name(host_email)
 
-    # Pick best file: prefer active_speaker MP4, fallback to first MP4, then M4A
+    # Pick best file: prefer M4A audio (small, fast), fallback to active_speaker MP4, then any MP4
     files = [f for f in recording.get("recording_files", [])
              if f.get("file_type") in ("MP4", "M4A") and f.get("status") == "completed"]
 
-    best = None
-    for f in files:
-        rt = f.get("recording_type", "").lower()
-        if f.get("file_type") == "MP4" and "active_speaker" in rt:
-            best = f
-            break
+    best = next((f for f in files if f.get("file_type") == "M4A"), None)
+    if not best:
+        for f in files:
+            if f.get("file_type") == "MP4" and "active_speaker" in f.get("recording_type", "").lower():
+                best = f
+                break
     if not best:
         best = next((f for f in files if f.get("file_type") == "MP4"), None)
-    if not best:
-        best = next((f for f in files), None)
 
     if not best:
         return []
