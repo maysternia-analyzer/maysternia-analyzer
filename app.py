@@ -196,6 +196,46 @@ def admin_webhook_logs():
     return jsonify(logs)
 
 
+@app.route("/debug/process-vtt", methods=["POST"])
+def debug_process_vtt():
+    """Manually process a Zoom VTT transcript URL. Body: {vtt_url, topic, date, duration, host_name}"""
+    from services.zoom import download_transcript_vtt
+    data = request.get_json() or {}
+    vtt_url = data.get("vtt_url", "")
+    topic = data.get("topic", "Zoom Meeting")
+    record_date = data.get("date", date.today().isoformat())
+    duration = data.get("duration", 0)
+    host_name = data.get("host_name", "Невідомо")
+
+    if not vtt_url:
+        return jsonify({"error": "vtt_url required"}), 400
+
+    import time as _time
+    filename = f"zoom_manual_{int(_time.time())}.vtt"
+    record_id = create_record(record_date, "sales", host_name, filename)
+    update_record(record_id, status="processing")
+
+    def _run():
+        try:
+            text = download_transcript_vtt(vtt_url)
+            update_record(record_id, transcription=text, status="analyzing")
+            from services.detection import detect_type_and_name
+            det = detect_type_and_name(topic, duration, False, host_name, text[:2000])
+            from database import get_db, _p
+            conn = get_db(); cur = conn.cursor()
+            cur.execute(f"UPDATE records SET record_type={_p()}, person_name={_p()} WHERE id={_p()}",
+                        (det["record_type"], det["person_name"], record_id))
+            conn.commit(); cur.close(); conn.close()
+            from services.analysis import analyze
+            analysis = analyze(det["record_type"], text)
+            update_record(record_id, analysis_json=analysis, status="done")
+        except Exception as e:
+            update_record(record_id, transcription=f"[ПОМИЛКА]: {e}", status="error")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "record_id": record_id})
+
+
 @app.route("/debug/delete-record/<int:record_id>", methods=["POST"])
 def debug_delete_record(record_id):
     from database import get_db, _p
