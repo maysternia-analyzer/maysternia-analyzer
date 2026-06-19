@@ -186,6 +186,19 @@ def admin_webhook_logs():
     return jsonify(logs)
 
 
+@app.route("/debug/unmark-zoom-file/<file_id>", methods=["POST"])
+def debug_unmark_zoom_file(file_id):
+    """Remove a file_id from zoom_processed so it can be re-processed."""
+    from database import get_db, _p
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM zoom_processed WHERE zoom_file_id={_p()}", (file_id,))
+    conn.commit()
+    deleted = cur.rowcount
+    cur.close(); conn.close()
+    return jsonify({"ok": True, "deleted": deleted, "file_id": file_id})
+
+
 @app.route("/debug/zoom-state")
 def debug_zoom_state():
     """Temporary debug endpoint — shows zoom_processed, webhook_log, and recent records."""
