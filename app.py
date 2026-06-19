@@ -27,6 +27,8 @@ from services.poller import start_background_poller, poll_once
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "maysternia-dev-key")
 
+_zoom_processing_lock = threading.Lock()
+
 # ── Flask-Login ───────────────────────────────────────────────────────────────
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
@@ -184,6 +186,18 @@ def admin_webhook_logs():
         abort(403)
     logs = get_webhook_logs(100)
     return jsonify(logs)
+
+
+@app.route("/debug/delete-record/<int:record_id>", methods=["POST"])
+def debug_delete_record(record_id):
+    from database import get_db, _p
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM records WHERE id={_p()}", (record_id,))
+    conn.commit()
+    deleted = cur.rowcount
+    cur.close(); conn.close()
+    return jsonify({"ok": True, "deleted": deleted, "id": record_id})
 
 
 @app.route("/debug/unmark-zoom-file/<file_id>", methods=["POST"])
@@ -581,11 +595,15 @@ def zoom_webhook():
     started = 0
     for rec in recordings:
         file_id = rec["filename"].replace("zoom_", "").rsplit(".", 1)[0]
-        if is_zoom_file_processed(file_id):
-            detail = f"Дублікат: {rec['filename']} (вже оброблено)"
-            print(f"[Zoom] {detail}", flush=True)
-            log_webhook(event, "skipped_duplicate", detail)
-            continue
+
+        # Lock prevents race condition when Zoom sends duplicate webhooks simultaneously
+        with _zoom_processing_lock:
+            if is_zoom_file_processed(file_id):
+                detail = f"Дублікат: {rec['filename']} (вже оброблено)"
+                print(f"[Zoom] {detail}", flush=True)
+                log_webhook(event, "skipped_duplicate", detail)
+                continue
+            mark_zoom_file_processed(file_id)
 
         # Create DB record SYNCHRONOUSLY before starting thread.
         # This way, if the app restarts and kills the thread, the record still
@@ -597,7 +615,6 @@ def zoom_webhook():
         )
         update_record(record_id, status="processing")
 
-        mark_zoom_file_processed(file_id)
         detail = f"Запускаємо: {rec['topic']} | {rec['filename']} | record_id={record_id}"
         print(f"[Zoom] {detail}", flush=True)
         log_webhook(event, "processing_started", detail)
