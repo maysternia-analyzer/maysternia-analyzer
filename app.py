@@ -57,7 +57,7 @@ def load_user(user_id):
 
 UPLOAD_FOLDER = Path(__file__).parent / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
-ALLOWED_EXTENSIONS = {"mp4", "m4a", "mp3", "wav", "webm", "mov"}
+ALLOWED_EXTENSIONS = {"mp4", "m4a", "mp3", "wav", "webm", "mov", "vtt", "txt"}
 
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB
 
@@ -68,7 +68,22 @@ def allowed_file(filename):
 
 def process_record_async(record_id, file_path, record_type):
     try:
-        text = transcribe(file_path)
+        # VTT/TXT — use as transcript directly, no Whisper needed
+        if file_path.endswith((".vtt", ".txt")):
+            import re
+            raw = open(file_path, encoding="utf-8").read()
+            lines = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line or line == "WEBVTT" or "-->" in line or line.isdigit():
+                    continue
+                line = re.sub(r"<v [^>]+>", "", line)
+                line = re.sub(r"<[^>]+>", "", line)
+                if line:
+                    lines.append(line)
+            text = " ".join(lines)
+        else:
+            text = transcribe(file_path)
         update_record(record_id, transcription=text, status="analyzing")
         analysis = analyze(record_type, text)
         update_record(record_id, analysis_json=analysis, status="done")
