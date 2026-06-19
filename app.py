@@ -188,16 +188,26 @@ def admin_webhook_logs():
 
 @app.route("/debug/zoom-state")
 def debug_zoom_state():
-    """Temporary debug endpoint — shows zoom_processed and webhook_log."""
+    """Temporary debug endpoint — shows zoom_processed, webhook_log, and recent records."""
     from database import get_db, get_webhook_logs
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT zoom_file_id, processed_at FROM zoom_processed ORDER BY processed_at DESC LIMIT 30")
     processed = [{"file_id": r[0], "at": r[1]} for r in cur.fetchall()]
+    cur.execute("""SELECT id, created_at, record_date, record_type, person_name, filename, status,
+                   LEFT(transcription, 200) as transcription_preview
+                   FROM records ORDER BY id DESC LIMIT 20""")
+    rows = cur.fetchall()
+    records = []
+    for r in rows:
+        records.append({
+            "id": r[0], "created_at": r[1], "date": r[2], "type": r[3],
+            "person": r[4], "filename": r[5], "status": r[6], "transcription_preview": r[7]
+        })
     cur.close()
     conn.close()
     logs = get_webhook_logs(50)
-    return jsonify({"zoom_processed": processed, "webhook_logs": logs})
+    return jsonify({"zoom_processed": processed, "webhook_logs": logs, "recent_records": records})
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
