@@ -63,8 +63,7 @@ def _split_and_transcribe(client, ff: str, path: Path) -> str:
         stderr=subprocess.DEVNULL,
     )
     total_sec = float(duration_raw.strip())
-    file_size = path.stat().st_size
-    chunk_sec = max(60, int(total_sec * (20 * 1024 * 1024) / file_size))
+    chunk_sec = 600  # 10 minutes per chunk — safe for any file type (audio or video)
 
     texts, start, idx = [], 0, 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -104,9 +103,19 @@ def transcribe(file_path: str) -> str:
     size_mb = path.stat().st_size / 1024 / 1024
     print(f"[Transcribe] Файл: {path.name} | {size_mb:.1f} MB", flush=True)
 
+    LARGE_FILE_BYTES = 100 * 1024 * 1024  # 100 MB — skip full compress, go straight to chunking
+
     ff = _ffmpeg_path()
     if ff:
         print(f"[Transcribe] ffmpeg знайдено: {ff}", flush=True)
+        file_size = path.stat().st_size
+
+        if file_size > LARGE_FILE_BYTES:
+            # Large file: split original directly into chunks (avoid OOM from full compress)
+            print(f"[Transcribe] Великий файл — нарізаємо оригінал на чанки без стиснення", flush=True)
+            return _split_and_transcribe(client, ff, path)
+
+        # Small file: compress first, then send or split
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 compressed = Path(tmp) / "audio.mp3"
@@ -118,11 +127,8 @@ def transcribe(file_path: str) -> str:
                 else:
                     return _split_and_transcribe(client, ff, compressed)
         except Exception as e:
-            print(f"[Transcribe] ffmpeg стиснення не вдалося: {e} — нарізаємо оригінал на чанки", flush=True)
-            try:
-                return _split_and_transcribe(client, ff, path)
-            except Exception as e2:
-                print(f"[Transcribe] нарізка оригіналу не вдалася: {e2}", flush=True)
+            print(f"[Transcribe] ffmpeg помилка: {e} — нарізаємо оригінал на чанки", flush=True)
+            return _split_and_transcribe(client, ff, path)
 
     # Fallback: send original file directly (only for small files)
     if path.stat().st_size <= MAX_BYTES:
@@ -130,5 +136,5 @@ def transcribe(file_path: str) -> str:
         return _transcribe_direct(client, path)
     else:
         raise RuntimeError(
-            f"Файл {size_mb:.1f} МБ перевищує ліміт 25 МБ і ffmpeg не зміг обробити файл."
+            f"Файл {size_mb:.1f} МБ перевищує ліміт 25 МБ і ffmpeg недоступний."
         )
