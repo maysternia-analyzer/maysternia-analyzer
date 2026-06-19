@@ -650,13 +650,13 @@ def zoom_webhook():
         log_webhook(event, "error_bad_signature", detail)
         return jsonify({"error": "invalid signature"}), 401
 
-    if event != "recording.completed":
+    if event not in ("recording.completed", "recording.transcript_completed"):
         log_webhook(event, "ignored", f"Подія не обробляється: {event}")
         return jsonify({"ok": True})
 
     import json as _json
     payload_preview = _json.dumps(data, ensure_ascii=False)[:1000]
-    print("[Zoom payload]", payload_preview, flush=True)
+    print(f"[Zoom payload] event={event}", payload_preview, flush=True)
 
     recordings = parse_webhook_payload(data)
     print(f"[Zoom] Знайдено файлів для обробки: {len(recordings)}", flush=True)
