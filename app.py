@@ -16,7 +16,8 @@ from database import (init_db, create_record, update_record, update_comment, get
                       get_all_records, get_person_names, update_sale_result, get_insights,
                       save_insights, get_user_by_email, get_user_by_id, get_all_users,
                       create_user, update_user, delete_user,
-                      is_zoom_file_processed, mark_zoom_file_processed)
+                      is_zoom_file_processed, mark_zoom_file_processed,
+                      log_webhook, get_webhook_logs)
 from services.transcription import transcribe
 from services.analysis import analyze
 from services.zoom import verify_webhook_signature, download_recording, parse_webhook_payload
@@ -174,6 +175,15 @@ def admin_change_password(user_id):
     if password:
         update_user(user_id, password_hash=generate_password_hash(password))
     return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/webhook-logs")
+@login_required
+def admin_webhook_logs():
+    if not current_user.is_admin():
+        abort(403)
+    logs = get_webhook_logs(100)
+    return jsonify(logs)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -493,40 +503,56 @@ def zoom_webhook():
     # Verify signature
     timestamp = request.headers.get("x-zm-request-timestamp", "")
     signature = request.headers.get("x-zm-signature", "")
-    print(f"[Webhook] timestamp={timestamp!r} sig={signature!r}", flush=True)
+    event = data.get("event", "unknown")
+    print(f"[Webhook] event={event} timestamp={timestamp!r} sig={signature!r}", flush=True)
+
     if not timestamp or not signature:
-        print("[Webhook] ❌ Відсутні заголовки підпису", flush=True)
+        msg = "Відсутні заголовки підпису x-zm-request-timestamp або x-zm-signature"
+        print(f"[Webhook] ❌ {msg}", flush=True)
+        log_webhook(event, "error_no_headers", msg)
         return jsonify({"error": "missing signature headers"}), 401
+
     if not verify_webhook_signature(body, timestamp, signature):
-        # Log expected vs received for debugging
         import hashlib as _hl
         secret = os.environ.get("ZOOM_WEBHOOK_SECRET", "")
-        msg = f"v0:{timestamp}:{body.decode()}"
-        expected = "v0=" + __import__('hmac').new(secret.encode(), msg.encode(), _hl.sha256).hexdigest()
-        print(f"[Webhook] ❌ Підпис не збігається. Expected={expected[:30]}... Got={signature[:30]}...", flush=True)
+        msg_str = f"v0:{timestamp}:{body.decode()}"
+        expected = "v0=" + __import__('hmac').new(secret.encode(), msg_str.encode(), _hl.sha256).hexdigest()
+        detail = f"Підпис не збігається. Expected={expected[:40]} Got={signature[:40]}"
+        print(f"[Webhook] ❌ {detail}", flush=True)
+        log_webhook(event, "error_bad_signature", detail)
         return jsonify({"error": "invalid signature"}), 401
 
-    print(f"[Zoom webhook] event={data.get('event')}")
-
-    if data.get("event") != "recording.completed":
+    if event != "recording.completed":
+        log_webhook(event, "ignored", f"Подія не обробляється: {event}")
         return jsonify({"ok": True})
 
-    # Log full payload for debugging
     import json as _json
-    print("[Zoom payload]", _json.dumps(data, ensure_ascii=False)[:2000])
+    payload_preview = _json.dumps(data, ensure_ascii=False)[:1000]
+    print("[Zoom payload]", payload_preview, flush=True)
 
     recordings = parse_webhook_payload(data)
-    print(f"[Zoom] Знайдено файлів для обробки: {len(recordings)}")
+    print(f"[Zoom] Знайдено файлів для обробки: {len(recordings)}", flush=True)
+
+    if not recordings:
+        obj = data.get("payload", {}).get("object", {})
+        all_files = obj.get("recording_files", [])
+        detail = f"parse_webhook_payload повернув 0 файлів. Всього у payload: {len(all_files)} файлів: {[f.get('file_type') for f in all_files]}"
+        print(f"[Zoom] ❌ {detail}", flush=True)
+        log_webhook(event, "error_no_files", detail)
+        return jsonify({"ok": True, "count": 0})
 
     started = 0
     for rec in recordings:
         file_id = rec["filename"].replace("zoom_", "").rsplit(".", 1)[0]
         if is_zoom_file_processed(file_id):
-            print(f"[Zoom] Пропускаємо дублікат: {rec['filename']}")
+            detail = f"Дублікат: {rec['filename']} (вже оброблено)"
+            print(f"[Zoom] {detail}", flush=True)
+            log_webhook(event, "skipped_duplicate", detail)
             continue
-        # Mark BEFORE starting thread to prevent race condition with poller
         mark_zoom_file_processed(file_id)
-        print(f"[Zoom] Запускаємо: {rec['topic']} | {rec['filename']} | breakout={rec['is_breakout']}")
+        detail = f"Запускаємо: {rec['topic']} | {rec['filename']} | breakout={rec['is_breakout']}"
+        print(f"[Zoom] {detail}", flush=True)
+        log_webhook(event, "processing_started", detail)
         thread = threading.Thread(
             target=_process_zoom_recording, args=(rec,), daemon=True
         )

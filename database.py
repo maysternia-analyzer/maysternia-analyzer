@@ -91,6 +91,15 @@ def init_db():
                 processed_at TEXT NOT NULL
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS webhook_log (
+                id SERIAL PRIMARY KEY,
+                received_at TEXT NOT NULL,
+                event TEXT,
+                status TEXT,
+                details TEXT
+            )
+        """)
     else:
         cur.executescript("""
             CREATE TABLE IF NOT EXISTS records (
@@ -125,6 +134,13 @@ def init_db():
             CREATE TABLE IF NOT EXISTS zoom_processed (
                 zoom_file_id TEXT PRIMARY KEY,
                 processed_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS webhook_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                received_at TEXT NOT NULL,
+                event TEXT,
+                status TEXT,
+                details TEXT
             );
         """)
         for col, definition in [
@@ -424,3 +440,31 @@ def mark_zoom_file_processed(zoom_file_id: str):
     finally:
         cur.close()
         conn.close()
+
+
+def log_webhook(event: str, status: str, details: str):
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"INSERT INTO webhook_log (received_at, event, status, details) VALUES ({_ph(4)})",
+            (datetime.now().isoformat(), event, status, details[:2000])
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+
+def get_webhook_logs(limit=50):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, received_at, event, status, details FROM webhook_log ORDER BY id DESC LIMIT %s" % limit
+                if USE_POSTGRES else
+                "SELECT id, received_at, event, status, details FROM webhook_log ORDER BY id DESC LIMIT %d" % limit)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [_row_to_dict(r) for r in rows]
