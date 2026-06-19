@@ -573,12 +573,23 @@ def zoom_webhook():
             print(f"[Zoom] {detail}", flush=True)
             log_webhook(event, "skipped_duplicate", detail)
             continue
+
+        # Create DB record SYNCHRONOUSLY before starting thread.
+        # This way, if the app restarts and kills the thread, the record still
+        # exists in the dashboard with status "processing" and can be retried.
+        st = rec["start_time"]
+        record_time = st[11:16] if len(st) > 10 else ""
+        record_id = create_record(
+            st[:10], "sales", rec.get("host_name", "Невідомо"), rec["filename"], record_time=record_time
+        )
+        update_record(record_id, status="processing")
+
         mark_zoom_file_processed(file_id)
-        detail = f"Запускаємо: {rec['topic']} | {rec['filename']} | breakout={rec['is_breakout']}"
+        detail = f"Запускаємо: {rec['topic']} | {rec['filename']} | record_id={record_id}"
         print(f"[Zoom] {detail}", flush=True)
         log_webhook(event, "processing_started", detail)
         thread = threading.Thread(
-            target=_process_zoom_recording, args=(rec,), daemon=True
+            target=_process_zoom_recording, args=(rec, record_id), daemon=True
         )
         thread.start()
         started += 1
@@ -586,16 +597,9 @@ def zoom_webhook():
     return jsonify({"ok": True, "count": started})
 
 
-def _process_zoom_recording(rec: dict):
+def _process_zoom_recording(rec: dict, record_id: int):
     """Download a Zoom recording and run the full analysis pipeline."""
-    # Create DB record immediately so failures are visible in dashboard
-    st = rec["start_time"]
-    record_time = st[11:16] if len(st) > 10 else ""
-    record_id = create_record(
-        st[:10], "sales", rec.get("host_name", "Невідомо"), rec["filename"], record_time=record_time
-    )
-    update_record(record_id, status="processing")
-    print(f"[Zoom] Створено запис ID:{record_id} | {rec['topic']}")
+    print(f"[Zoom] Обробляємо ID:{record_id} | {rec['topic']}")
 
     try:
         print(f"[Zoom] Завантажуємо: {rec['filename']}")
