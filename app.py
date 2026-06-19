@@ -660,30 +660,27 @@ def _redownload_and_process(record_id, filename):
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 def _seed_zoom_processed():
-    """On first startup, mark all existing Zoom recordings as processed so poller skips them."""
+    """Mark as processed only Zoom files that already exist in our DB (by filename).
+    This prevents re-processing existing records on redeploy, but does NOT block new recordings.
+    """
     try:
-        from services.zoom import get_access_token
-        from database import is_zoom_file_processed, mark_zoom_file_processed
-        from datetime import datetime, timedelta
-        import requests as _req
-        token = get_access_token()
-        date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        meetings = _req.get(
-            "https://api.zoom.us/v2/users/me/recordings",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"page_size": 100, "from": date_from},
-            timeout=15,
-        ).json().get("meetings", [])
+        from database import is_zoom_file_processed, mark_zoom_file_processed, get_db
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT filename FROM records WHERE filename LIKE 'zoom_%'")
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+
         count = 0
-        for m in meetings:
-            for f in m.get("recording_files", []):
-                if f["file_type"] not in ("MP4", "M4A"):
-                    continue
-                fid = str(f["id"])
-                if not is_zoom_file_processed(fid):
-                    mark_zoom_file_processed(fid)
-                    count += 1
-        print(f"[Startup] Помічено як оброблені {count} старих записів Zoom", flush=True)
+        for row in rows:
+            filename = row[0] if isinstance(row, (list, tuple)) else row["filename"]
+            if not filename:
+                continue
+            fid = filename.replace("zoom_", "").rsplit(".", 1)[0]
+            if not is_zoom_file_processed(fid):
+                mark_zoom_file_processed(fid)
+                count += 1
+        print(f"[Startup] Помічено як оброблені {count} записів з БД", flush=True)
     except Exception as e:
         print(f"[Startup] Помилка seed: {e}", flush=True)
 
