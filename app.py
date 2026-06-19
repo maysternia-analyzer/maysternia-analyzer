@@ -622,20 +622,29 @@ def _redownload_and_process(record_id, filename):
         ).json().get("meetings", [])
 
         download_url = None
+        best_filename = filename
         for m in meetings:
-            for f in m.get("recording_files", []):
-                if str(f.get("id")) == zoom_file_id:
-                    download_url = f.get("download_url")
-                    break
-            if download_url:
-                break
+            files = m.get("recording_files", [])
+            # Check if this meeting contains our file_id
+            if not any(str(f.get("id")) == zoom_file_id for f in files):
+                continue
+            # Prefer M4A audio from the same meeting
+            m4a = next((f for f in files if f.get("file_type") == "M4A" and f.get("status") == "completed"), None)
+            if m4a:
+                download_url = m4a.get("download_url")
+                best_filename = f"zoom_{m4a['id']}.m4a"
+            else:
+                orig = next((f for f in files if str(f.get("id")) == zoom_file_id), None)
+                if orig:
+                    download_url = orig.get("download_url")
+            break
 
         if not download_url:
             update_record(record_id, transcription="[ПОМИЛКА]: Запис не знайдено в Zoom (минуло більше 30 днів?)", status="error")
             return
 
-        print(f"[Redownload] Скачуємо ID:{record_id} | {filename}")
-        file_path = download_recording(download_url, filename)
+        print(f"[Redownload] Скачуємо ID:{record_id} | {best_filename}")
+        file_path = download_recording(download_url, best_filename)
         text = transcribe(file_path)
         update_record(record_id, transcription=text, status="analyzing")
 
