@@ -312,6 +312,42 @@ def debug_unmark_zoom_file(file_id):
 @app.route("/debug/zoom-state")
 def debug_zoom_state():
     """Temporary debug endpoint — shows zoom_processed, webhook_log, and recent records."""
+    # Also expose which Zoom account is configured
+    pass
+
+
+@app.route("/debug/zoom-account")
+def debug_zoom_account():
+    """Show which Zoom account Railway is using + recent recordings visible via API."""
+    import base64, json as _json
+    from services.zoom import get_access_token
+    try:
+        token = get_access_token()
+        parts = token.split('.')
+        payload = _json.loads(base64.urlsafe_b64decode(parts[1] + '=='))
+        uid = payload.get('uid')
+        aid = payload.get('aid')
+        # Check what recordings are visible
+        import requests as _req
+        meetings = _req.get(
+            "https://api.zoom.us/v2/users/me/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"page_size": 10, "from": "2026-06-01"},
+            timeout=10,
+        ).json().get("meetings", [])
+        return jsonify({
+            "account_id": aid,
+            "user_id": uid,
+            "env_account_id": os.environ.get("ZOOM_ACCOUNT_ID"),
+            "env_client_id": os.environ.get("ZOOM_CLIENT_ID"),
+            "visible_meetings": [{"topic": m["topic"], "date": m["start_time"][:10], "host": m.get("host_id")} for m in meetings]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
+@app.route("/debug/zoom-state-real")
+def debug_zoom_state_real():
     from database import get_db, get_webhook_logs
     conn = get_db()
     cur = conn.cursor()
