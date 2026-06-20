@@ -251,6 +251,38 @@ def debug_process_vtt():
     return jsonify({"ok": True, "record_id": record_id})
 
 
+@app.route("/debug/process-transcript", methods=["POST"])
+def debug_process_transcript():
+    """Accept raw transcript text and run full analysis pipeline."""
+    data = request.get_json() or {}
+    text = data.get("transcript", "")
+    topic = data.get("topic", "Zoom Meeting")
+    record_date = data.get("date", date.today().isoformat())
+    duration = data.get("duration", 0)
+    host_name = data.get("host_name", "Невідомо")
+    record_time = data.get("record_time", "")
+    if not text:
+        return jsonify({"error": "transcript required"}), 400
+    filename = f"zoom_manual_{int(_time.time())}.vtt"
+    record_id = create_record(record_date, "sales", host_name, filename, record_time=record_time)
+    update_record(record_id, status="processing")
+    def _run():
+        try:
+            update_record(record_id, transcription=text, status="analyzing")
+            det = detect_type_and_name(topic, duration, False, host_name, text[:2000])
+            _db = __import__('database')
+            conn = _db.get_db(); cur = conn.cursor(); p = _db._p()
+            cur.execute(f"UPDATE records SET record_type={p}, person_name={p} WHERE id={p}",
+                        (det["record_type"], det["person_name"], record_id))
+            conn.commit(); cur.close(); conn.close()
+            analysis = analyze(det["record_type"], text)
+            update_record(record_id, analysis_json=analysis, status="done")
+        except Exception as e:
+            update_record(record_id, transcription=f"[ПОМИЛКА]: {e}", status="error")
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "record_id": record_id})
+
+
 @app.route("/debug/delete-record/<int:record_id>", methods=["POST"])
 def debug_delete_record(record_id):
     from database import get_db, _p
