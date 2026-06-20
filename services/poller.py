@@ -42,49 +42,50 @@ def poll_once():
 
     new_count = 0
     for m in meetings:
-        # Pick best file per meeting: M4A audio > active_speaker MP4 > first MP4
-        files = [f for f in m.get("recording_files", [])
-                 if f["file_type"] in ("MP4", "M4A") and f.get("status") == "completed"]
-        best = next((f for f in files if f["file_type"] == "M4A"), None)
+        all_files = m.get("recording_files", [])
+
+        # Prefer TRANSCRIPT (VTT) — instant, no Whisper
+        best = next((f for f in all_files
+                     if f.get("file_type") == "TRANSCRIPT" and f.get("status") == "completed"), None)
+        is_vtt = best is not None
+
         if not best:
-            for f in files:
-                if f["file_type"] == "MP4" and "active_speaker" in f.get("recording_type", "").lower():
-                    best = f; break
-        if not best:
-            best = next((f for f in files if f["file_type"] == "MP4"), None)
+            media = [f for f in all_files if f.get("file_type") in ("MP4", "M4A") and f.get("status") == "completed"]
+            best = next((f for f in media if f["file_type"] == "M4A"), None)
+            if not best:
+                best = next((f for f in media if "active_speaker" in f.get("recording_type", "").lower()), None)
+            if not best:
+                best = next((f for f in media if f["file_type"] == "MP4"), None)
         if not best:
             continue
 
-        f = best
-        file_id = str(f["id"])
-        ext = f.get("file_extension", "mp4").lower()
+        file_id = str(best["id"])
+        ext = "vtt" if is_vtt else best.get("file_extension", "mp4").lower()
         filename = f"zoom_{file_id}.{ext}"
 
         if is_zoom_file_processed(file_id):
             continue
 
-        print(f"[Poller] Новий запис: {m['topic']} | {m['start_time'][:10]}")
+        print(f"[Poller] Новий запис: {m['topic']} | {m['start_time'][:10]} | {'VTT' if is_vtt else ext.upper()}")
         start_dt = m["start_time"]
         record_time = start_dt[11:16] if len(start_dt) > 10 else ""
-        record_id = create_record(
-            start_dt[:10], "sales",
-            m.get("host_email", "").split("@")[0] or "Невідомо",
-            filename,
-            record_time=record_time,
-        )
+        host_name = m.get("host_email", "").split("@")[0] or "Невідомо"
+        record_id = create_record(start_dt[:10], "sales", host_name, filename, record_time=record_time)
         mark_zoom_file_processed(file_id)
         update_record(record_id, status="processing")
 
         try:
-            path = download_recording(f["download_url"], filename)
-            text = transcribe(path)
+            if is_vtt:
+                from services.zoom import download_transcript_vtt
+                text = download_transcript_vtt(best["download_url"])
+                print(f"[Poller] VTT: {len(text)} символів")
+            else:
+                path = download_recording(best["download_url"], filename)
+                text = transcribe(path)
             update_record(record_id, transcription=text, status="analyzing")
 
-            is_breakout = "breakout" in f.get("recording_type", "").lower()
-            det = detect_type_and_name(
-                m["topic"], m["duration"], is_breakout,
-                m.get("host_email", "").split("@")[0], text[:2000],
-            )
+            is_breakout = "breakout" in best.get("recording_type", "").lower()
+            det = detect_type_and_name(m["topic"], m["duration"], is_breakout, host_name, text[:2000])
             from database import get_db, _p
             conn = get_db()
             cur = conn.cursor()
