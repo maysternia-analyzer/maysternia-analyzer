@@ -263,7 +263,8 @@ def debug_process_transcript():
     record_time = data.get("record_time", "")
     if not text:
         return jsonify({"error": "transcript required"}), 400
-    filename = f"zoom_manual_{int(_time.time())}.vtt"
+    import time as _time2
+    filename = f"zoom_manual_{int(_time2.time())}.vtt"
     record_id = create_record(record_date, "sales", host_name, filename, record_time=record_time)
     update_record(record_id, status="processing")
     def _run():
