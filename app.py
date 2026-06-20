@@ -860,9 +860,28 @@ def _seed_zoom_processed():
         print(f"[Startup] Помилка seed: {e}", flush=True)
 
 
+def _recover_stuck_records():
+    """Mark records stuck in 'processing' for more than 2 hours as 'error'."""
+    from database import get_db, _p
+    from datetime import datetime, timedelta
+    conn = get_db()
+    cur = conn.cursor()
+    cutoff = (datetime.now() - timedelta(hours=2)).isoformat()
+    p = _p()
+    cur.execute(
+        f"UPDATE records SET status='error', transcription='[ПОМИЛКА]: Обробка перервана — сервер перезапустився' WHERE status='processing' AND created_at < {p}",
+        (cutoff,)
+    )
+    n = cur.rowcount
+    conn.commit(); cur.close(); conn.close()
+    if n:
+        print(f"[Startup] Відновлено {n} завислих записів → error", flush=True)
+
+
 def _run_startup():
     """Runs once at startup regardless of how the app is launched (gunicorn or dev)."""
     init_db()
+    _recover_stuck_records()
     if not _zoom_configured():
         print("[Startup] Zoom-синхронізацію вимкнено: ZOOM_* ключі не задані", flush=True)
         return
