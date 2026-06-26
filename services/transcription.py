@@ -136,20 +136,23 @@ def transcribe(file_path: str) -> str:
     print(f"[Transcribe] ffmpeg: {ff}", flush=True)
 
     # Step 1: Compress to MP3 64kbps mono → much smaller, then send or split
+    compress_error = None
     try:
         print(f"[Transcribe] Стискаємо до MP3...", flush=True)
         return _compress_and_transcribe(client, ff, path)
     except Exception as e:
+        compress_error = e
         print(f"[Transcribe] Стиснення не вдалося: {e} — пробуємо stream copy", flush=True)
 
-    # Step 2: Fallback — stream copy split (works for some codecs)
+    # Step 2: Fallback — stream copy split
+    split_error = None
     try:
         print(f"[Transcribe] Нарізаємо через stream copy...", flush=True)
         return _split_copy_and_transcribe(client, ff, path)
     except Exception as e:
+        split_error = e
         print(f"[Transcribe] Stream copy не вдався: {e}", flush=True)
 
     raise RuntimeError(
-        f"Не вдалося обробити файл {size_mb:.1f} МБ. "
-        f"Деталі помилки дивіться в логах Railway."
+        f"compress: {compress_error} | split: {split_error}"
     )
