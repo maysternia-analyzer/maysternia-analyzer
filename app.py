@@ -312,8 +312,21 @@ def debug_unmark_zoom_file(file_id):
 @app.route("/debug/zoom-state")
 def debug_zoom_state():
     """Temporary debug endpoint — shows zoom_processed, webhook_log, and recent records."""
-    # Also expose which Zoom account is configured
-    pass
+    from database import get_db, get_webhook_logs
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT zoom_file_id, processed_at FROM zoom_processed ORDER BY processed_at DESC LIMIT 30")
+    processed = [{"file_id": r[0], "at": r[1]} for r in cur.fetchall()]
+    cur.execute("""SELECT id, created_at, record_date, record_type, person_name, filename, status,
+                   LEFT(transcription, 200) as transcription_preview
+                   FROM records ORDER BY id DESC LIMIT 20""")
+    rows = cur.fetchall()
+    records = [{"id": r[0], "created_at": r[1], "date": r[2], "type": r[3],
+                "person": r[4], "filename": r[5], "status": r[6], "transcription_preview": r[7]}
+               for r in rows]
+    cur.close(); conn.close()
+    logs = get_webhook_logs(50)
+    return jsonify({"zoom_processed": processed, "webhook_logs": logs, "recent_records": records})
 
 
 @app.route("/debug/zoom-account")
@@ -585,6 +598,39 @@ def save_comment(record_id):
     return jsonify({"ok": True})
 
 
+@app.route("/debug/ffmpeg-check")
+def debug_ffmpeg_check():
+    """Check ffmpeg availability and test compression on Railway."""
+    import subprocess
+    from services.transcription import _ffmpeg_path
+    ff = _ffmpeg_path()
+    result = {"ffmpeg_path": ff}
+    if ff:
+        try:
+            r = subprocess.run([ff, "-version"], capture_output=True, timeout=10)
+            result["version"] = r.stdout.decode()[:200]
+        except Exception as e:
+            result["version_error"] = str(e)
+    return jsonify(result)
+
+
+@app.route("/debug/retranscribe/<int:record_id>", methods=["POST"])
+def debug_retranscribe(record_id):
+    """Retranscribe any record — works for both zoom_ and manual uploads."""
+    record = get_record(record_id)
+    if not record:
+        return jsonify({"error": "not found"}), 404
+    filename = record.get("filename", "")
+    file_path = UPLOAD_FOLDER / filename
+    if not file_path.exists():
+        return jsonify({"error": f"File not found: {filename}"}), 404
+    update_record(record_id, status="processing", transcription=None)
+    def _run():
+        process_record_async(record_id, str(file_path), record.get("record_type", "sales"))
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "record_id": record_id, "file": filename})
+
+
 @app.route("/record/<int:record_id>/delete", methods=["POST"])
 @login_required
 def delete_record(record_id):
@@ -607,16 +653,23 @@ def reanalyze(record_id):
     has_error = not transcription or transcription.startswith("[ПОМИЛКА")
 
     if has_error:
-        # Re-download from Zoom and reprocess
         filename = record.get("filename", "")
         if filename and filename.startswith("zoom_"):
+            # Re-download from Zoom
             update_record(record_id, status="processing")
+            thread = threading.Thread(target=_redownload_and_process, args=(record_id, filename), daemon=True)
+            thread.start()
+            return jsonify({"ok": True, "action": "redownload"})
+        # Manually uploaded file — retranscribe from disk
+        file_path = UPLOAD_FOLDER / filename
+        if filename and file_path.exists():
+            update_record(record_id, status="processing", transcription=None)
             thread = threading.Thread(
-                target=_redownload_and_process, args=(record_id, filename),
+                target=process_record_async, args=(record_id, str(file_path), record["record_type"]),
                 daemon=True,
             )
             thread.start()
-            return jsonify({"ok": True, "action": "redownload"})
+            return jsonify({"ok": True, "action": "retranscribe"})
         abort(400)
     else:
         update_record(record_id, status="analyzing")
