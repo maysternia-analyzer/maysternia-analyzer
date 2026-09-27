@@ -18,7 +18,7 @@ from pathlib import Path
 import requests
 
 import database as db
-from services import zoom
+from services import notify, settings, zoom
 from services.analysis import analyze
 from services.detection import detect_type_and_name, guess_type
 from services.timeutil import parse_iso, zoom_start_to_local
@@ -30,7 +30,6 @@ log = logging.getLogger(__name__)
 
 UPLOAD_FOLDER = Path(__file__).resolve().parent.parent / "uploads"
 MAX_ATTEMPTS = int(os.environ.get("JOB_MAX_ATTEMPTS", "3"))
-TRANSCRIPT_WAIT_MINUTES = int(os.environ.get("ZOOM_TRANSCRIPT_WAIT_MINUTES", "180"))
 TRANSCRIPT_RECHECK_MINUTES = 15
 TEXT_EXTENSIONS = {"vtt", "txt"}
 RETRY_DELAYS_MINUTES = (2, 10, 30)
@@ -244,7 +243,8 @@ def _zoom_transcript(record: dict) -> str:
     now = db.utcnow()
     end = parse_iso(info["end_time"])
     end_naive = end.replace(tzinfo=None) if end else None
-    within_wait = end_naive is not None and now < end_naive + timedelta(minutes=TRANSCRIPT_WAIT_MINUTES)
+    wait_minutes = settings.get("zoom_transcript_wait_minutes")
+    within_wait = end_naive is not None and now < end_naive + timedelta(minutes=wait_minutes)
     recheck = db.utcnow_iso(timedelta(minutes=TRANSCRIPT_RECHECK_MINUTES))
 
     if not best:
@@ -317,7 +317,30 @@ def _apply_detection(record: dict, text: str) -> str:
         transcript=text,
         fallback_name=record.get("person_name") or "Невідомо",
     )
-    db.update_record(record["id"], record_type=result["record_type"], person_name=result["person_name"])
+    name = result["person_name"]
+    linked = db.get_linked_person_names()
+    if linked and name not in linked:
+        from services.transcript_text import speaker_stats
+        speakers = speaker_stats(text)
+        speaker_names = {s["speaker"] for s in speakers}
+        total = sum(s["chars"] for s in speakers) or 1
+        # Замінюємо лише «службове» імʼя (не учасник розмови: акаунт організатора, «Невідомо»…)
+        # і лише на співробітника, який говорив суттєву частину часу — інакше тренера заняття
+        # переписало б на менеджера, що говорить лише наприкінці.
+        employee = next((s["speaker"] for s in speakers
+                         if s["speaker"] in linked and s["chars"] / total >= 0.3), None)
+        if name not in speaker_names and employee:
+            name = employee
+    # auto_detect=0: визначаємо один раз — повторні аналізи не «перекидають» запис між людьми.
+    # Умова auto_detect = 1: якщо за час запиту до AI людина вже виправила тип/імʼя — не перетираємо.
+    changed = db.execute(
+        "UPDATE records SET record_type = ?, person_name = ?, auto_detect = 0, updated_at = ? "
+        "WHERE id = ? AND auto_detect = 1",
+        (result["record_type"], name, db.utcnow_iso(), record["id"]),
+    )
+    if not changed:
+        return (db.get_record(record["id"]) or record).get("record_type") or "sales"
+    result["person_name"] = name
     log.info("Запис #%s: %s / %s (%s)", record["id"], result["record_type"],
              result["person_name"], result.get("reason", ""))
     return result["record_type"]
@@ -333,7 +356,7 @@ def process_record(record: dict) -> str:
 
 def _process(record: dict, record_id: int, attempts: int) -> str:
     try:
-        if record.get("job_kind") == "analyze" and is_valid_transcript(record.get("transcription")):
+        if record.get("job_kind") in ("analyze", "reanalyze") and is_valid_transcript(record.get("transcription")):
             text = strip_error_suffix(record["transcription"])
         else:
             text = obtain_transcript(record)
@@ -347,11 +370,17 @@ def _process(record: dict, record_id: int, attempts: int) -> str:
 
         db.update_record(record_id, status="analyzing", locked_at=db.utcnow_iso())
         result = analyze(record_type, text)
+        extra = {}
+        if record.get("job_kind") == "reanalyze":
+            # масовий переаналіз не повинен потрапляти в щоденний звіт як «нові» дзвінки
+            extra["analyzed_at"] = record.get("analyzed_at") or record.get("created_at")
         db.update_record(record_id, analysis=result, status="done", error_message=None,
-                         locked_at=None, not_before=None, job_kind="analyze")
+                         locked_at=None, not_before=None, job_kind="analyze", **extra)
         current = db.get_record(record_id)
         if current and current.get("record_type") != record_type:  # тип змінили під час аналізу
             db.enqueue_record(record_id, "analyze")
+        elif record.get("job_kind") != "reanalyze":  # масовий переаналіз не спамить сповіщеннями
+            notify.notify_record_done(record_id)
         log.info("Запис #%s оброблено", record_id)
         return "done"
 

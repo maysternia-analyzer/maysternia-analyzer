@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% from "_macros.html" import score_color, status_badge %}
+{% block title %}Пошук — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>🔎 Пошук по розмовах</h1>
+</div>
+
+<form method="get" action="{{ url_for('search_page') }}" style="margin-bottom:20px">
+  <div style="display:flex;gap:10px">
+    <input class="form-control" type="search" name="q" value="{{ query }}" minlength="2" maxlength="200"
+           placeholder="Слово чи фраза: «дорого», «розстрочка», імʼя клієнта, заперечення…" autofocus>
+    <button class="btn btn-primary" type="submit">Знайти</button>
+  </div>
+  <p style="font-size:12px;color:var(--text-muted);margin-top:6px">Шукає в транскрипціях, AI-аналізі, коментарях та іменах. Показуються 30 найсвіжіших збігів.</p>
+</form>
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+{% if query and query|length < 2 %}
+<p style="color:var(--text-muted)">Введіть щонайменше 2 символи.</p>
+{% elif query %}
+<div class="section-title">Знайдено: {{ results|length }}{% if results|length == 30 %}+{% endif %}</div>
+{% for r in results %}
+{% set s = main_score(r.analysis, r.record_type) if r.analysis else none %}
+<a class="card search-hit" href="{{ url_for('record_detail', record_id=r.id) }}">
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+    <span>{{ '🎓' if r.record_type == 'lesson' else '💰' }}</span>
+    <strong>{{ r.person_name }}</strong>
+    <span style="color:var(--text-muted);font-size:13px">{{ r.record_date }} {{ r.record_time }}</span>
+    {% if s is not none %}<span style="color:{{ score_color(s) }};font-weight:600">{{ s }}%</span>{% endif %}
+    {{ status_badge(r) }}
+  </div>
+  <div class="check-comment">{{ r.snippet|highlight(query) }}</div>
+</a>
+{% else %}
+<p style="color:var(--text-muted)">Нічого не знайдено.</p>
+{% endfor %}
+{% endif %}
+{% endblock %}

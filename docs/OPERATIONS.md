@@ -3,7 +3,15 @@
 ## Деплой (Railway)
 
 Railway собирает проект автоматически при пуше в ветку `main` репозитория
-`maysternia-analyzer/maysternia-analyzer` (nixpacks, ~2 минуты). Конфигурация — `railway.toml`:
+`maysternia-analyzer/maysternia-analyzer` (nixpacks, ~2 минуты).
+
+> **На 27.09.2026 автодеплой не срабатывает**: последний деплой в GitHub — 26.06.2026, прод
+> работает на старой версии (признак — `/healthz` отвечает 404). Запустить вручную:
+> Railway → проект `gallant-balance` → сервис `web` → Deployments → **Deploy latest commit**;
+> чтобы починить автодеплой — Settings → Source → переподключить GitHub-репозиторий и
+> проверить, что выбрана ветка `main`. После деплоя `/healthz` должен отвечать `{"ok": true, "db": true}`.
+
+Конфигурация — `railway.toml`:
 
 ```
 gunicorn app:app --workers 2 --threads 4 --worker-class gthread --timeout 600 --no-control-socket
@@ -28,6 +36,7 @@ ffmpeg на Railway ставит nixpacks: он добавляет пакет `f
 | `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` | для Zoom | Server-to-Server OAuth |
 | `ZOOM_WEBHOOK_SECRET` | для Zoom | Secret Token приложения в Zoom Marketplace |
 | `OPENAI_API_KEY` | нет | Whisper для аудио без транскрипции Zoom |
+| `PUBLIC_BASE_URL` | нет | Адрес сайта для ссылок в Telegram/вебхуке (на Railway берётся из `RAILWAY_PUBLIC_DOMAIN`) |
 | `ANTHROPIC_MODEL` | нет | По умолчанию `claude-sonnet-4-6`. Новые модели (Sonnet 5, Opus 5+) по умолчанию «думают» — это дороже и тратит `max_tokens` |
 | `APP_TIMEZONE` | нет | По умолчанию `Europe/Kyiv` |
 | `ZOOM_POLL_INTERVAL_MINUTES` / `ZOOM_POLL_LOOKBACK_DAYS` | нет | 5 / 3 |
@@ -36,6 +45,10 @@ ffmpeg на Railway ставит nixpacks: он добавляет пакет `f
 | `ZOOM_IGNORE_SPEAKERS` | нет | Имена аккаунтов-организаторов через запятую («Код Харизми») |
 | `JOB_CONCURRENCY` / `JOB_MAX_ATTEMPTS` | нет | 2 / 3 |
 | `DB_POOL_MIN` / `DB_POOL_MAX` | нет | Соединений PostgreSQL на процесс: держать открытыми / максимум (3 / 8) |
+
+Большинство параметров (модель Claude, пороги, Telegram, вебхук, параметры Zoom, описание компании,
+чек-листы) настраиваются в интерфейсе: **Налаштування** и **Чек-листи** (только администратор).
+Значения из переменных окружения служат значениями по умолчанию.
 
 ## Zoom
 

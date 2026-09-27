@@ -19,7 +19,13 @@ class LLMError(RuntimeError):
 
 
 def model() -> str:
-    return os.environ.get("ANTHROPIC_MODEL", "").strip() or DEFAULT_MODEL
+    """Модель: з налаштувань адмінки → ANTHROPIC_MODEL → за замовчуванням."""
+    try:
+        from services import settings
+        chosen = settings.get("anthropic_model")
+    except Exception:  # БД недоступна — не блокуємо аналіз
+        chosen = ""
+    return chosen or os.environ.get("ANTHROPIC_MODEL", "").strip() or DEFAULT_MODEL
 
 
 def is_configured() -> bool:
@@ -45,6 +51,17 @@ def client() -> anthropic.Anthropic:
         return _client
 
 
+def validate_model(model_id: str) -> str | None:
+    """Перевіряє, що модель існує. Повертає текст помилки або None (у т.ч. якщо перевірити не вдалося)."""
+    try:
+        client().with_options(timeout=15, max_retries=0).models.retrieve(model_id)
+    except anthropic.NotFoundError:
+        return f"Модель «{model_id}» не знайдено в Anthropic — перевірте назву"
+    except Exception as e:  # мережа / ключ — не блокуємо збереження
+        log.warning("Не вдалося перевірити модель %s: %s", model_id, e)
+    return None
+
+
 def extract_json(raw: str) -> dict:
     """Дістає JSON-обʼєкт з тексту (на випадок відповіді без structured outputs)."""
     raw = (raw or "").strip()
@@ -64,28 +81,55 @@ def _is_structured_output_unsupported(error: anthropic.BadRequestError) -> bool:
     return any(word in message for word in ("output_config", "json_schema", "structured output"))
 
 
+STREAM_THRESHOLD = 16000  # довші відповіді отримуємо стрімінгом (без ризику HTTP-таймаутів)
+
+
+_TRANSIENT_STREAM_ERRORS = ("overloaded_error", "api_error", "rate_limit_error")
+
+
+def _send(api, **kwargs):
+    if kwargs["max_tokens"] <= STREAM_THRESHOLD:
+        return api.messages.create(**kwargs)
+    try:
+        with api.messages.stream(**kwargs) as stream:
+            return stream.get_final_message()
+    except anthropic.APIStatusError as e:
+        if e.status_code != 200:
+            raise
+        # Подія помилки прийшла вже після HTTP 200 (посеред стріму): визначаємо тип з тіла.
+        error = e.body.get("error") if isinstance(e.body, dict) else None
+        error_type = error.get("type") if isinstance(error, dict) else None
+        raise LLMError(f"Anthropic: {error_type or e.message}",
+                       transient=error_type in _TRANSIENT_STREAM_ERRORS) from e
+    except anthropic.APIError:
+        raise
+    except Exception as e:  # обрив зʼєднання під час читання стріму (помилки транспорту httpx)
+        raise LLMError(f"Зʼєднання з Anthropic обірвалося: {e}", transient=True) from e
+
+
 def call_json(system: str, user: str, schema: dict, max_tokens: int = 16000) -> dict:
-    """Запит до Claude, що повертає dict за JSON-схемою."""
+    """
+    Запит до Claude, що повертає dict за JSON-схемою. Новіші моделі (Sonnet 5, Opus 5) за
+    замовчуванням «думають» — це входить у max_tokens, тож для великих відповідей беріть запас.
+    """
     kwargs = dict(model=model(), max_tokens=max_tokens, system=system,
                   messages=[{"role": "user", "content": user}])
     api = client()
     try:
         try:
-            resp = api.messages.create(
-                **kwargs, output_config={"format": {"type": "json_schema", "schema": schema}}
-            )
+            resp = _send(api, **kwargs, output_config={"format": {"type": "json_schema", "schema": schema}})
         except anthropic.BadRequestError as e:
             if not _is_structured_output_unsupported(e):
                 raise
             log.warning("Модель %s не підтримує structured outputs — звичайний режим", model())
             kwargs["system"] = system + "\n\nВідповідай ТІЛЬКИ валідним JSON-обʼєктом без markdown."
-            resp = api.messages.create(**kwargs)
+            resp = _send(api, **kwargs)
     except anthropic.AuthenticationError as e:
         raise LLMError("Ключ Anthropic недійсний — оновіть ANTHROPIC_API_KEY") from e
     except anthropic.PermissionDeniedError as e:
         raise LLMError(f"Anthropic: немає доступу ({e.message})") from e
     except anthropic.NotFoundError as e:
-        raise LLMError(f"Модель {model()} недоступна — перевірте ANTHROPIC_MODEL") from e
+        raise LLMError(f"Модель {model()} недоступна — оберіть іншу в «Налаштуваннях»") from e
     except anthropic.RateLimitError as e:
         raise LLMError("Anthropic: перевищено ліміт запитів, повторимо пізніше", transient=True) from e
     except (anthropic.APIConnectionError, anthropic.APITimeoutError) as e:

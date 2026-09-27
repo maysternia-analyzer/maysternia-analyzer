@@ -30,6 +30,18 @@ class FakeMessages:
             raise result
         return result
 
+    def stream(self, **kwargs):
+        response = self.create(**kwargs)
+        self.calls[-1]["_streamed"] = True
+
+        class _Stream:
+            def __enter__(self_inner):
+                return SimpleNamespace(get_final_message=lambda: response)
+
+            def __exit__(self_inner, *exc):
+                return False
+        return _Stream()
+
 
 @pytest.fixture
 def fake_claude(monkeypatch):
@@ -157,25 +169,51 @@ def test_extract_json():
 
 def test_normalize_lesson_handles_garbage():
     result = analysis.normalize_lesson({"greeting": None, "overall_score": "85.6", "engagement_level": "високий рівень",
-                                        "strengths": ["a", "b"], "summary": None})
-    assert result["greeting"] == {"result": False, "comment": ""}
-    assert result["overall_score"] == 86
+                                        "strengths": ["a", "b"], "summary": None, "key_moments": "bad",
+                                        "coaching_phrases": [{"phrase": "так"}, None]})
+    assert result["criteria"]["greeting"] == {"result": False, "comment": "", "quote": "", "time": ""}
+    assert result["overall_score"] == 86 and result["checklist_score"] == 0
+    assert result["key_moments"] == [] and result["coaching_phrases"] == [{"situation": "", "phrase": "так"}]
     assert result["engagement_level"] == "Високий"
     assert result["strengths"] == "a\nb"
     assert result["summary"] == ""
     assert result["_kind"] == "lesson"
-    assert set(k for k, _ in analysis.LESSON_CRITERIA) <= set(result)
+    assert [c["key"] for c in result["_criteria"]] == [k for k, _ in analysis.LESSON_CRITERIA]
 
 
 def test_normalize_sales_clamps_and_defaults():
     result = analysis.normalize_sales({"checklist_score": 150, "deal_chance_percent": -5, "deal_chance": None,
-                                       "top_mistakes": "одна помилка",
-                                       "need_identified": {"result": 1, "details": "потреба"}})
-    assert result["checklist_score"] == 100 and result["deal_chance_percent"] == 0
-    assert result["deal_chance"] == ""
+                                       "top_mistakes": "одна помилка", "objections": [{"text": "Дорого", "category": "ЦІНА!"}],
+                                       "risks": [{"category": "щось нове", "description": "x"}], "next_step": "bad",
+                                       "need_identified": {"result": 1, "details": "потреба", "time": "1:05"}})
+    assert result["checklist_score"] == 20        # рахується з критеріїв (1 з 5), а не береться від AI
+    assert result["deal_chance_percent"] == 0 and result["deal_chance"] == ""
     assert result["top_mistakes"] == ["одна помилка"]
-    assert result["need_identified"] == {"result": True, "comment": "потреба", "details": "потреба"}
+    assert result["criteria"]["need_identified"] == {"result": True, "comment": "потреба", "quote": "", "time": "00:01:05"}
+    assert result["objections"][0]["category"] == "ціна" and result["risks"][0]["category"] == "інше"
+    assert result["next_step"] == {"agreed": False, "description": "", "deadline": ""}
     assert result["_kind"] == "sales"
+
+
+def test_weighted_checklist_score_and_custom_checklist(monkeypatch):
+    checklist = {"criteria": [{"key": "a", "title": "A", "weight": 3, "description": "a"},
+                              {"key": "b", "title": "B", "weight": 1, "description": "b"}]}
+    result = analysis.normalize("sales", {"criteria": {"a": {"result": True}, "b": {"result": False}}}, checklist)
+    assert result["checklist_score"] == 75
+    assert result["_criteria"] == [{"key": "a", "title": "A", "weight": 3}, {"key": "b", "title": "B", "weight": 1}]
+    items = analysis.present_criteria(result, "sales")
+    assert [(c["title"], c["result"], c["weight"]) for c in items] == [("A", True, 3), ("B", False, 1)]
+
+
+def test_present_criteria_for_legacy_flat_analysis():
+    legacy = {"need_identified": {"result": True, "details": "потреба"}, "presentation_done": {"result": False},
+              "checklist_score": 60}
+    items = analysis.present_criteria(legacy, "sales")
+    assert [c["title"] for c in items] == ["Виявив потребу клієнта", "Зробив презентацію курсу"]
+    assert items[0]["comment"] == "потреба"
+    assert analysis.main_score(legacy, "sales") == 60
+    assert analysis.main_score({"overall_score": "77"}, "lesson") == 77
+    assert analysis.main_score({}, "sales") is None
 
 
 def test_to_score():
@@ -193,17 +231,31 @@ def test_prepare_transcript_truncates_only_huge_texts():
     assert cut and len(text) < len(huge) and "скорочена" in text
 
 
-def test_analyze_routes_by_type(monkeypatch):
+def test_analyze_uses_configured_checklist_and_context(monkeypatch):
+    from services import checklists, settings
+    checklists.save_checklist("sales", {"criteria": [
+        {"title": "Назвав ціну", "description": "озвучив вартість курсу", "weight": 2},
+        {"key": "need_identified", "title": "Потреба", "description": "зʼясував потребу", "weight": 1}],
+        "instructions": "Скрипт: привітання → діагностика → ціна"})
+    settings.update({"company_context": "Школа танців «Тест», курс 5000 грн"})
     seen = []
 
     def fake_call_json(system, user, schema, max_tokens=16000):
         seen.append((system, schema))
-        return {"overall_score": 70} if schema is analysis.LESSON_SCHEMA else {"checklist_score": 40}
+        keys = list(schema["properties"]["criteria"]["properties"])
+        return {"criteria": {keys[0]: {"result": True, "quote": "Курс коштує 5000", "time": "00:02:10"}},
+                "overall_score": 70, "deal_chance": "Високий"}
 
     monkeypatch.setattr(analysis, "call_json", fake_call_json)
-    assert analysis.analyze("lesson", "текст")["overall_score"] == 70
-    assert analysis.analyze("sales", "текст")["checklist_score"] == 40
-    assert seen[0][0] is analysis.LESSON_SYSTEM and seen[1][0] is analysis.SALES_SYSTEM
+    sales = analysis.analyze("sales", "текст")
+    system, schema = seen[0]
+    assert "Школа танців «Тест»" in system and "Назвав ціну" in system and "діагностика → ціна" in system
+    assert "need_identified" in schema["properties"]["criteria"]["properties"]
+    assert "objections" in schema["properties"]
+    assert sales["checklist_score"] == 67          # вага 2 з 3
+    assert sales["criteria"][sales["_criteria"][0]["key"]]["time"] == "00:02:10"
+    lesson = analysis.analyze("lesson", "текст")
+    assert lesson["overall_score"] == 70 and "objections" not in seen[1][1]["properties"]
 
 
 def _assert_strict(schema, path="$"):
@@ -219,7 +271,9 @@ def _assert_strict(schema, path="$"):
 
 
 def test_schemas_are_strict_at_every_level():
-    for schema in (analysis.LESSON_SCHEMA, analysis.SALES_SCHEMA, detection.DETECT_SCHEMA, insights.INSIGHTS_SCHEMA):
+    from services import checklists, coaching
+    schemas = [analysis.build_schema(kind, checklists.DEFAULTS[kind]) for kind in checklists.KINDS]
+    for schema in schemas + [detection.DETECT_SCHEMA, insights.INSIGHTS_SCHEMA, coaching.SCHEMA]:
         _assert_strict(schema)
 
 
@@ -325,7 +379,13 @@ def test_generate_insights_overrides_numbers_and_limits_payload(monkeypatch):
     assert data["sales_patterns"]["conversion_rate"] == 50
     assert data["lesson_insights"]["avg_score"] == 90
     payload = json.loads(captured["user"].split("<data>\n", 1)[1].rsplit("\n</data>", 1)[0])
-    assert len(payload["sales"][0]["transcript_preview"]) == insights.SALES_PREVIEW_CHARS + 1  # + «…»
+    first = payload["sales"][0]
+    assert "transcript_preview" not in first            # є резюме — сирий фрагмент не потрібен
+    assert first["summary"] and first["objections"][0]["category"] == "ціна"
+    assert first["checklist"]["Виявив потребу клієнта"] is True
+    legacy = {"record_type": "sales", "analysis": {"checklist_score": 50}, "person_name": "X",
+              "record_date": "2026-09-01", "transcription": "т" * 5000}
+    assert len(insights._sale_summary(legacy)["transcript_preview"]) == insights.SALES_PREVIEW_CHARS + 1
 
 
 def test_insights_payload_budget_keeps_newest(monkeypatch):
@@ -353,3 +413,69 @@ def test_insights_tolerate_legacy_non_dict_values(monkeypatch):
 
 def test_generate_insights_empty():
     assert insights.generate_insights([])["top_needs"] == []
+
+
+def test_large_responses_are_streamed(fake_claude):
+    messages = fake_claude(_response('{"a": 1}'), _response('{"b": 2}'))
+    assert llm.call_json("s", "u", {}, max_tokens=32000) == {"a": 1}
+    assert messages.calls[0].get("_streamed") and messages.calls[0]["max_tokens"] == 32000
+    assert llm.call_json("s", "u", {}, max_tokens=4096) == {"b": 2}
+    assert not messages.calls[1].get("_streamed")
+
+
+def test_validate_model(monkeypatch):
+    def retrieve(model_id):
+        if model_id == "claude-bad":
+            raise _api_error(anthropic.NotFoundError, 404, "not found")
+        if model_id == "offline":
+            raise RuntimeError("offline")
+        return SimpleNamespace(id=model_id)
+
+    fake = SimpleNamespace(with_options=lambda **k: SimpleNamespace(models=SimpleNamespace(retrieve=retrieve)))
+    monkeypatch.setattr(llm, "client", lambda: fake)
+    assert llm.validate_model("claude-sonnet-5") is None
+    assert "не знайдено" in llm.validate_model("claude-bad")
+    assert llm.validate_model("offline") is None
+
+
+def _sse(*events):
+    return "".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events).encode()
+
+
+_MESSAGE_START = ("message_start", {"type": "message_start", "message": {
+    "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-sonnet-4-6", "content": [],
+    "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}}})
+
+
+class _BrokenStream(httpx2.SyncByteStream):
+    def __iter__(self):
+        yield _sse(_MESSAGE_START)
+        raise httpx2.ReadError("connection reset")
+
+
+@pytest.mark.parametrize("error_type, transient", [("overloaded_error", True), ("api_error", True),
+                                                   ("invalid_request_error", False)])
+def test_stream_error_events_are_classified(monkeypatch, error_type, transient):
+    """Помилка посеред стріму приходить після HTTP 200 — тип визначаємо з події."""
+    def handler(request):
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=_sse(
+            _MESSAGE_START, ("error", {"type": "error", "error": {"type": error_type, "message": "x"}})))
+
+    real = anthropic.Anthropic(api_key="sk-ant-test", max_retries=0,
+                               http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(llm, "client", lambda: real)
+    with pytest.raises(llm.LLMError) as err:
+        llm.call_json("s", "u", {}, max_tokens=32000)
+    assert err.value.transient is transient and error_type in str(err.value)
+
+
+def test_stream_connection_drop_is_transient(monkeypatch):
+    def handler(request):
+        return httpx2.Response(200, headers={"content-type": "text/event-stream"}, stream=_BrokenStream())
+
+    real = anthropic.Anthropic(api_key="sk-ant-test", max_retries=0,
+                               http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(llm, "client", lambda: real)
+    with pytest.raises(llm.LLMError) as err:
+        llm.call_json("s", "u", {}, max_tokens=32000)
+    assert err.value.transient

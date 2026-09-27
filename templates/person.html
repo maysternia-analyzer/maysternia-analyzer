@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% from "_macros.html" import score_color, rate_bar, sparkline, status_badge %}
+{% block title %}{{ name }} — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+{% set p = profile.summary %}
+<div class="page-header">
+  {% if current_user.is_staff() %}<a href="{{ url_for('team_page') }}" style="color:var(--text-muted);font-size:13px">← Команда</a>{% endif %}
+  <h1>📈 {{ name }}</h1>
+</div>
+
+{% if p %}
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Проаналізовано</div>
+    <div class="stat-value">{{ p.calls }}</div>
+    <div class="stat-sub">{{ p.lessons_count }} {{ p.lessons_count|plural('заняття', 'заняття', 'занять') }} · {{ p.sales_count }} {{ p.sales_count|plural('продаж', 'продажі', 'продажів') }}</div>
+  </div>
+  {% if p.avg_score is not none %}
+  <div class="stat-card">
+    <div class="stat-label">Середня оцінка</div>
+    <div class="stat-value" style="color:{{ score_color(p.avg_score) }}">{{ p.avg_score }}%</div>
+    <div class="stat-sub">за весь час</div>
+  </div>
+  {% endif %}
+  {% if p.avg_deal_pct is not none %}
+  <div class="stat-card">
+    <div class="stat-label">Середній шанс угоди</div>
+    <div class="stat-value">{{ p.avg_deal_pct }}%</div>
+    <div class="stat-sub">{% if p.conversion is not none %}реальна конверсія {{ p.conversion }}% ({{ p.sold }}/{{ p.with_result }}){% else %}результати продажів не відмічені{% endif %}</div>
+  </div>
+  {% endif %}
+  {% if p.revenue %}
+  <div class="stat-card">
+    <div class="stat-label">Сума угод</div>
+    <div class="stat-value" style="font-size:22px;color:var(--green)">{{ p.revenue|money }} ₴</div>
+    <div class="stat-sub">{{ p.sold }} {{ p.sold|plural('продаж', 'продажі', 'продажів') }}</div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if not profile.series %}
+<div class="card" style="margin-bottom:20px;color:var(--text-muted)">Проаналізованих записів поки немає — профіль заповниться після перших дзвінків.</div>
+{% elif points|length < 2 %}
+<div class="card" style="margin-bottom:20px;color:var(--text-muted)">Динаміка зʼявиться після двох і більше проаналізованих записів.</div>
+{% else %}
+<div class="card" style="margin-bottom:20px">
+  <div class="section-title">Динаміка оцінок</div>
+  {{ sparkline(points) }}
+  <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted)">
+    <span>{{ points[0].date }}</span><span>{{ points[-1].date }}</span>
+  </div>
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:20px" id="coach-card">
+  <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+    <span>🎯 План розвитку від AI</span>
+    {% if current_user.is_staff() %}
+    <button type="button" class="btn btn-outline btn-sm" id="coach-btn" data-url="{{ url_for('person_coach', name=name) }}">
+      {{ '🔄 Оновити план' if plan else '✨ Згенерувати план' }}
+    </button>
+    {% endif %}
+  </div>
+  {% if plan %}
+  <p class="text-block" style="color:var(--text)">{{ plan.summary }}</p>
+  {% if plan.focus_next_week %}<div class="script-box" style="margin:12px 0">🎯 <strong>Фокус на тиждень:</strong> {{ plan.focus_next_week }}</div>{% endif %}
+  <div class="two-columns" style="margin-bottom:0">
+    <div>
+      <div class="section-title" style="margin-top:8px">Сильні сторони</div>
+      <ul class="plain-list">{% for s in plan.strengths or [] %}<li>✅ {{ s }}</li>{% endfor %}</ul>
+    </div>
+    <div>
+      <div class="section-title" style="margin-top:8px">Зони росту</div>
+      {% for g in plan.growth_areas or [] %}
+      <div style="margin-bottom:10px">
+        <strong>{{ g.skill }}</strong>
+        <div class="check-comment">{{ g.evidence }}</div>
+        <div class="check-comment">🏋️ {{ g.exercise }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% if plan.phrases %}
+  <div class="section-title" style="margin-top:8px">Фрази для роботи</div>
+  {% for phrase in plan.phrases %}<div class="script-box" style="margin-bottom:6px">{{ phrase }}</div>{% endfor %}
+  {% endif %}
+  <p style="font-size:12px;color:var(--text-muted);margin-top:10px">Згенеровано {{ plan.generated_at|localtime }} на основі {{ plan.based_on }} записів.</p>
+  {% else %}
+  <p class="text-block">Плану ще немає. {% if current_user.is_staff() %}AI проаналізує останні записи й підготує персональні рекомендації (≈ 30 секунд).{% else %}Попросіть керівника згенерувати його.{% endif %}</p>
+  {% endif %}
+  <span id="coach-status" style="font-size:13px;color:var(--text-muted)"></span>
+</div>
+
+{% if profile.sales_criteria or profile.lesson_criteria %}
+<div class="two-columns">
+  {% for title, rates in (('Навички продажу', profile.sales_criteria), ('Навички на заняттях', profile.lesson_criteria)) %}
+  {% if rates %}
+  <div class="card">
+    <div class="section-title">{{ title }}</div>
+    {% for c in rates %}
+    <div style="margin-bottom:10px">
+      <div style="font-size:13px;margin-bottom:4px">{{ c.title }} <span style="color:var(--text-muted)">({{ c.passed }}/{{ c.total }})</span></div>
+      {{ rate_bar(c.rate) }}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if profile.mistakes or profile.objections %}
+<div class="two-columns">
+  {% if profile.mistakes %}
+  <div class="card">
+    <div class="section-title">Типові помилки</div>
+    <ul class="mistakes-list">
+      {% for m in profile.mistakes %}<li><a href="{{ url_for('record_detail', record_id=m.id) }}" style="color:inherit">{{ m.text }}</a></li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% if profile.objections %}
+  <div class="card">
+    <div class="section-title">Заперечення клієнтів</div>
+    {% for o in profile.objections %}
+    <div style="margin-bottom:10px">
+      <div style="font-size:13px;margin-bottom:4px"><strong>{{ o.category }}</strong> ×{{ o.count }} — відпрацьовано</div>
+      {{ rate_bar(o.handled_rate) }}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card" style="padding:0;overflow:hidden">
+  <div class="section-title" style="padding:16px 20px 0">Останні записи</div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Дата</th><th>Тип</th><th>Оцінка</th><th>Резюме</th><th>Статус</th></tr></thead>
+      <tbody>
+        {% for r in records %}
+        {% set s = main_score(r.analysis, r.record_type) if r.analysis else none %}
+        <tr class="clickable" data-href="{{ url_for('record_detail', record_id=r.id) }}">
+          <td style="white-space:nowrap">{{ r.record_date }} <span style="color:var(--text-muted);font-size:12px">{{ r.record_time }}</span></td>
+          <td>{{ '🎓' if r.record_type == 'lesson' else '💰' }}</td>
+          <td style="color:{{ score_color(s) }};font-weight:600">{{ (s ~ '%') if s is not none else '—' }}</td>
+          <td class="summary-cell">{{ ((r.analysis or {}).summary or '')[:140] }}</td>
+          <td>{{ status_badge(r) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const coachBtn = document.getElementById('coach-btn');
+if (coachBtn) {
+  coachBtn.addEventListener('click', async () => {
+    const status = document.getElementById('coach-status');
+    coachBtn.disabled = true;
+    status.textContent = '⏳ Генеруємо план (≈ 30 секунд)...';
+    const result = await apiPost(coachBtn.dataset.url);
+    if (result.ok) { location.reload(); return; }
+    status.textContent = '❌ ' + result.error;
+    coachBtn.disabled = false;
+  });
+}
+</script>
+{% endblock %}

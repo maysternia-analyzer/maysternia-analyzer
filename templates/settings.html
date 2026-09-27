@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Налаштування — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>🛠 Налаштування</h1>
+</div>
+
+<form method="POST" action="{{ url_for('admin_settings') }}" class="settings-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-title">🏫 Компанія</div>
+    <div class="form-group">
+      <label class="form-label" for="company_context">Опис компанії та продукту для AI</label>
+      <textarea class="form-control" id="company_context" name="company_context" rows="5" maxlength="5000">{{ s.company_context }}</textarea>
+      <p class="hint">Що продаєте, ціна, формат навчання, особливості. Використовується в кожному аналізі — чим точніше, тим кращі висновки.</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-title">🤖 AI-аналіз</div>
+    <div class="form-group">
+      <label class="form-label" for="anthropic_model">Модель Claude</label>
+      <select class="form-control" id="anthropic_model" name="anthropic_model">
+        <option value="" {{ 'selected' if not s.anthropic_model }}>За замовчуванням ({{ default_model }})</option>
+        {% for value, label in models %}
+        <option value="{{ value }}" {{ 'selected' if s.anthropic_model == value }}>{{ label }}</option>
+        {% endfor %}
+        <option value="custom" {{ 'selected' if s.anthropic_model and s.anthropic_model not in known_models }}>Інша модель…</option>
+      </select>
+      <input class="form-control" style="margin-top:8px" type="text" name="anthropic_model_custom" id="anthropic_model_custom" placeholder="ідентифікатор моделі, напр. claude-opus-5"
+             value="{{ s.anthropic_model if s.anthropic_model and s.anthropic_model not in known_models else '' }}">
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="low_score_threshold">Поріг «низької оцінки», %</label>
+      <input class="form-control" style="max-width:140px" type="number" min="0" max="100" id="low_score_threshold" name="low_score_threshold" value="{{ s.low_score_threshold }}">
+      <p class="hint">Записи з оцінкою нижче порогу потрапляють у розділ «нижче порогу» щоденного звіту й надсилаються як тривога в Telegram.</p>
+    </div>
+    <label class="check-row"><input type="checkbox" name="manager_can_see_transcript" {{ 'checked' if s.manager_can_see_transcript }}> Менеджери бачать повну транскрипцію своїх записів</label>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-title">📨 Telegram-сповіщення</div>
+    <p class="hint" style="margin-bottom:12px">
+      1) Створіть бота у <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> і вставте токен.
+      2) Додайте бота в чат керівників (або напишіть йому) і вкажіть chat id — дізнатися можна через
+      <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>; для груп id починається з «-».
+    </p>
+    <div class="two-columns" style="margin-bottom:0">
+      <div class="form-group">
+        <label class="form-label" for="telegram_bot_token">Токен бота</label>
+        <input class="form-control" type="password" id="telegram_bot_token" name="telegram_bot_token" autocomplete="off"
+               placeholder="{{ ('збережено: ' ~ telegram_token_mask) if telegram_token_mask else '123456:ABC…' }}">
+        {% if telegram_token_mask %}<label class="check-row"><input type="checkbox" name="clear_telegram_bot_token"> Видалити токен</label>{% endif %}
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="telegram_chat_ids">Chat id (через кому)</label>
+        <input class="form-control" type="text" id="telegram_chat_ids" name="telegram_chat_ids" value="{{ s.telegram_chat_ids }}" placeholder="-1001234567890, 123456789">
+      </div>
+    </div>
+    <label class="check-row"><input type="checkbox" name="notify_on_done" {{ 'checked' if s.notify_on_done }}> Підсумок після кожного аналізу</label>
+    <label class="check-row"><input type="checkbox" name="notify_low_score" {{ 'checked' if s.notify_low_score }}> Тривоги: оцінка нижче порогу або «гарячий» лід без наступного кроку</label>
+    <label class="check-row"><input type="checkbox" name="daily_digest_enabled" {{ 'checked' if s.daily_digest_enabled }}> Щоденний звіт керівнику о
+      <input class="form-control" type="time" name="daily_digest_time" value="{{ s.daily_digest_time }}" style="width:120px;display:inline-block;margin-left:6px"></label>
+    {% if not public_url %}<p class="hint" style="color:var(--yellow)">Щоб у повідомленнях були посилання на записи, задайте змінну PUBLIC_BASE_URL (на Railway визначається автоматично).</p>{% endif %}
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-title">🔗 Інтеграція (вихідний вебхук)</div>
+    <p class="hint" style="margin-bottom:12px">Після кожного аналізу сервіс надсилає POST з JSON (оцінка, резюме, клієнт, заперечення, ризики, наступний крок) — підключіть CRM, Make, Zapier чи n8n. Заголовки: <code>X-Maysternia-Timestamp</code> (unix-час) і <code>X-Maysternia-Signature: sha256=HMAC(секрет, "&lt;timestamp&gt;.&lt;тіло&gt;")</code> — перевіряйте підпис і відкидайте запити, старші за 5 хвилин. Адреса має бути публічною.</p>
+    <div class="two-columns" style="margin-bottom:0">
+      <div class="form-group">
+        <label class="form-label" for="webhook_url">URL (https://…)</label>
+        <input class="form-control" type="url" id="webhook_url" name="webhook_url" value="{{ s.webhook_url }}" placeholder="https://hook.eu1.make.com/…">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="webhook_secret">Секрет для підпису</label>
+        <input class="form-control" type="password" id="webhook_secret" name="webhook_secret" autocomplete="off"
+               placeholder="{{ ('збережено: ' ~ webhook_secret_mask) if webhook_secret_mask else 'необовʼязково' }}">
+        {% if webhook_secret_mask %}<label class="check-row"><input type="checkbox" name="clear_webhook_secret"> Видалити секрет</label>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-title">🎥 Zoom</div>
+    <div class="two-columns" style="margin-bottom:0">
+      <div class="form-group">
+        <label class="form-label" for="zoom_min_duration_minutes">Не аналізувати записи коротші за, хв</label>
+        <input class="form-control" type="number" min="0" max="600" id="zoom_min_duration_minutes" name="zoom_min_duration_minutes" value="{{ s.zoom_min_duration_minutes }}">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="zoom_transcript_wait_minutes">Чекати транскрипцію Zoom до, хв</label>
+        <input class="form-control" type="number" min="0" max="1440" id="zoom_transcript_wait_minutes" name="zoom_transcript_wait_minutes" value="{{ s.zoom_transcript_wait_minutes }}">
+        <p class="hint">Після цього — розпізнавання аудіо через Whisper (якщо задано ключ OpenAI).</p>
+      </div>
+    </div>
+  </div>
+
+  <button type="submit" class="btn btn-primary">💾 Зберегти налаштування</button>
+</form>
+
+<div class="card" style="margin-top:24px">
+  <div class="section-title">Перевірка</div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+    <form method="POST" action="{{ url_for('admin_test_telegram') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-outline btn-sm">📨 Тестове повідомлення в Telegram</button>
+    </form>
+    <form method="POST" action="{{ url_for('admin_digest_now') }}" style="display:flex;gap:8px;align-items:center">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input class="form-control" type="date" name="day" style="width:160px">
+      <button type="submit" class="btn btn-outline btn-sm">📊 Надіслати звіт за день</button>
+    </form>
+    <form method="POST" action="{{ url_for('admin_test_webhook') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-outline btn-sm">🔗 Тестовий вебхук</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -111,7 +111,9 @@ def test_inactive_user_cannot_login_and_session_is_revoked(client):
     user = make_user(active=False)
     set_csrf(client)
     resp = client.post("/login", data={"email": "admin@example.com", "password": "password123", "csrf_token": CSRF})
-    assert resp.status_code == 401
+    assert resp.status_code == 403 and "заблоковано" in resp.get_data(as_text=True)
+    wrong = client.post("/login", data={"email": "admin@example.com", "password": "bad", "csrf_token": CSRF})
+    assert wrong.status_code == 401 and "заблоковано" not in wrong.get_data(as_text=True)  # без пароля не видаємо
     login(client, user)  # навіть зі старою сесією доступу немає
     assert client.get("/").status_code == 302
 
@@ -225,10 +227,14 @@ def _seed_varied_records():
 
 def test_all_pages_render_with_varied_data(admin_client):
     ids = _seed_varied_records()
-    for path in ("/", "/?type=sales", "/?type=bogus&date_from=xx", "/lessons", "/sales", "/sales?trainer=Мирослава",
-                 "/stats", "/analytics", "/upload", "/admin/users", "/admin/system"):
+    for path in ("/", "/?type=sales", "/?type=bogus&date_from=xx", "/?page=2", "/?page=abc", "/lessons", "/sales",
+                 "/sales?trainer=Мирослава", "/team", "/team?period=all", "/team?date_from=2026-08-01&date_to=2026-09-30",
+                 "/person?name=Олена", "/person?name=Мирослава", "/search?q=день", "/search?q=x", "/analytics", "/upload",
+                 "/admin/users", "/admin/system", "/admin/settings", "/admin/checklists/sales",
+                 "/admin/checklists/lesson", "/export.csv", "/export.csv?type=sales"):
         resp = admin_client.get(path)
         assert resp.status_code == 200, path
+    assert admin_client.get("/stats").status_code == 302
     for name, rid in ids.items():
         resp = admin_client.get(f"/record/{rid}")
         assert resp.status_code == 200, name
@@ -248,7 +254,7 @@ def test_dashboard_stats_are_computed(admin_client):
     stats = app_module.build_stats(db.get_all_records())
     assert stats["sold"] == 1 and stats["revenue"] == 25000
     assert stats["in_progress"] == 2 and stats["errors"] == 2
-    assert stats["conversion"] == 100
+    assert stats["ai_high_share"] == 100 and stats["conversion_real"] == 100
     assert dict(stats["by_person"])["Олена"] == 30   # (60 + 0) / 2 — null не ламає статистику
 
 
@@ -343,7 +349,7 @@ def test_delete_record_removes_uploaded_file(admin_client):
 
 
 def test_small_bad_inputs_do_not_500(admin_client):
-    assert admin_client.get("/uploads/x%00.mp3").status_code == 404
+    assert admin_client.get("/uploads/x%00.mp3").status_code in (400, 404)
     rid = _record()
     assert post_json(admin_client, f"/record/{rid}/meta", {"record_type": "sales", "person_name": 5}).status_code == 400
     assert post_json(admin_client, f"/record/{rid}/meta", {"record_type": ["sales"], "person_name": "x"}).status_code == 400
@@ -398,7 +404,7 @@ def test_upload_vtt_with_cyrillic_name_is_analyzed_directly(admin_client):
     resp = _upload(admin_client, "Запис дзвінка.vtt", vtt)
     assert resp.status_code == 302
     rec = db.get_record(int(resp.headers["Location"].rsplit("/", 1)[1]))
-    assert rec["transcription"] == "Олена: Добрий день"
+    assert rec["transcription"] == "[00:00:01] Олена: Добрий день"
     assert (rec["status"], rec["job_kind"], rec["source"]) == ("queued", "analyze", "text")
     assert (rec["record_time"], rec["trainer_name"]) == ("14:30", "Мирослава")
     assert json.loads(rec["source_json"])["original_name"] == "Запис дзвінка.vtt"

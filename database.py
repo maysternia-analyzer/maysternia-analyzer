@@ -58,12 +58,32 @@ RECORD_COLUMNS = [
     ("attempts", "INTEGER DEFAULT 0", "INTEGER DEFAULT 0"),
     ("locked_at", "TEXT", "TEXT"),                            # heartbeat активної обробки
     ("not_before", "TEXT", "TEXT"),                           # відкладений старт (UTC ISO)
+    # --- «легкі» поля з аналізу: списки й статистика без розбору analysis_json ---
+    ("analysis_kind", "TEXT", "TEXT"),
+    ("score", "INTEGER", "INTEGER"),
+    ("checklist_done", "INTEGER", "INTEGER"),
+    ("checklist_total", "INTEGER", "INTEGER"),
+    ("summary", "TEXT", "TEXT"),
+    ("deal_chance", "TEXT", "TEXT"),
+    ("deal_chance_percent", "INTEGER", "INTEGER"),
+    ("lead_temperature", "TEXT", "TEXT"),
+    ("engagement_level", "TEXT", "TEXT"),
+    ("analyzed_at", "TEXT", "TEXT"),
 ]
+LIGHT_FIELDS = ("analysis_kind", "score", "checklist_done", "checklist_total", "summary", "deal_chance",
+                "deal_chance_percent", "lead_temperature", "engagement_level")
 _RECORD_COLUMN_NAMES = {c[0] for c in RECORD_COLUMNS}
+ROLES = ("admin", "viewer", "manager")
+# Колонки users, що зʼявились після першої версії: (назва, тип SQLite, тип PostgreSQL).
+USER_EXTRA_COLUMNS = [("person_name", "TEXT DEFAULT ''", "TEXT DEFAULT ''")]
 
 # Колонки для списків (без важкої транскрипції).
 _LIST_COLUMNS = ", ".join(
     ["id"] + [c for c, _, _ in RECORD_COLUMNS if c not in ("transcription", "source_json")]
+)
+# Ще легші — без analysis_json (дашборд, списки, статистика).
+_LIGHT_COLUMNS = ", ".join(
+    ["id"] + [c for c, _, _ in RECORD_COLUMNS if c not in ("transcription", "source_json", "analysis_json")]
 )
 
 
@@ -162,6 +182,8 @@ def connect():
         conn = sqlite3.connect(SQLITE_PATH, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA synchronous=NORMAL")  # безпечно в режимі WAL, значно швидше
+        # Вбудований LOWER у SQLite розуміє лише латиницю — підміняємо на Unicode-версію.
+        conn.create_function("lower", 1, lambda v: v.lower() if isinstance(v, str) else v, deterministic=True)
         try:
             yield conn
             conn.commit()
@@ -248,7 +270,8 @@ def _schema_statements() -> list[str]:
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'viewer',
                 created_at TEXT NOT NULL,
-                is_active INTEGER NOT NULL DEFAULT 1)""",
+                is_active INTEGER NOT NULL DEFAULT 1,
+                person_name TEXT DEFAULT '')""",
         f"""CREATE TABLE IF NOT EXISTS insights_cache (
                 id {_pk()},
                 updated_at TEXT NOT NULL,
@@ -280,6 +303,21 @@ def _existing_columns(cur, table: str) -> set[str]:
         return {r[0] for r in cur.fetchall()}
     cur.execute(f"PRAGMA table_info({table})")
     return {r[1] for r in cur.fetchall()}
+
+
+def _migrate_table(cur, table: str, columns: list[tuple[str, str, str]]):
+    existing = _existing_columns(cur, table)
+    for name, sqlite_type, pg_type in columns:
+        if name in existing:
+            continue
+        definition = (pg_type if USE_POSTGRES else sqlite_type).replace("NOT NULL ", "")
+        try:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e):
+                raise
+            continue
+        log.info("Міграція: додано колонку %s.%s", table, name)
 
 
 def _migrate_records(cur):
@@ -318,6 +356,7 @@ def init_db():
         for stmt in _schema_statements():
             cur.execute(stmt)
         _migrate_records(cur)
+        _migrate_table(cur, "users", USER_EXTRA_COLUMNS)
         for idx_sql in (
             "CREATE INDEX IF NOT EXISTS idx_records_status ON records(status)",
             "CREATE INDEX IF NOT EXISTS idx_records_date ON records(record_date)",
@@ -456,6 +495,20 @@ def create_zoom_record_once(claim_keys: list[str], record_date, record_type, per
     return record_id
 
 
+def light_fields_from_json(raw) -> dict:
+    """«Легкі» поля з analysis_json (оцінка, чек-ліст X/Y, резюме…)."""
+    empty = dict.fromkeys(LIGHT_FIELDS)
+    try:
+        analysis = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return empty
+    kind = analysis_kind(analysis)
+    if not kind:
+        return empty
+    from services.analysis import light_fields  # лінивий імпорт: services імпортують database
+    return light_fields(_coerce_analysis(analysis), kind)
+
+
 def update_record(record_id: int, **fields) -> int:
     """Оновлює довільні колонки запису. analysis / source_json серіалізуються в JSON."""
     if "analysis" in fields:
@@ -463,6 +516,10 @@ def update_record(record_id: int, **fields) -> int:
         fields["analysis_json"] = (
             json.dumps(analysis, ensure_ascii=False) if analysis is not None else None
         )
+    if "analysis_json" in fields:
+        fields.update(light_fields_from_json(fields["analysis_json"]))
+        if fields["analysis_json"] and not fields.get("analyzed_at"):
+            fields["analyzed_at"] = utcnow_iso()
     if "source_json" in fields and not isinstance(fields["source_json"], (str, type(None))):
         fields["source_json"] = json.dumps(fields["source_json"], ensure_ascii=False)
     unknown = set(fields) - _RECORD_COLUMN_NAMES
@@ -485,8 +542,13 @@ def get_all_records(record_type=None, person_name=None, date_from=None, date_to=
     columns = _LIST_COLUMNS
     if transcript_preview_chars:
         columns += f", SUBSTR(transcription, 1, {int(transcript_preview_chars)}) AS transcription"
-    query = f"SELECT {columns} FROM records WHERE 1=1"
-    params = []
+    where, params = _filters_sql(record_type, person_name, trainer_name, date_from, date_to)
+    query = f"SELECT {columns} FROM records WHERE 1=1{where} ORDER BY record_date DESC, record_time DESC, id DESC"
+    return [_decorate(r) for r in fetch_all(query, params)]
+
+
+def _filters_sql(record_type=None, person_name=None, trainer_name=None, date_from=None, date_to=None):
+    query, params = "", []
     for column, op, value in (
         ("record_type", "=", record_type),
         ("person_name", "=", person_name),
@@ -497,8 +559,81 @@ def get_all_records(record_type=None, person_name=None, date_from=None, date_to=
         if value:
             query += f" AND {column} {op} ?"
             params.append(value)
-    query += " ORDER BY record_date DESC, record_time DESC, id DESC"
+    return query, params
+
+
+def list_records(record_type=None, person_name=None, trainer_name=None, date_from=None, date_to=None) -> list[dict]:
+    """Легкі рядки для списків і статистики: без транскрипції та JSON аналізу."""
+    where, params = _filters_sql(record_type, person_name, trainer_name, date_from, date_to)
+    rows = fetch_all(f"SELECT {_LIGHT_COLUMNS} FROM records WHERE 1=1{where} "
+                     f"ORDER BY record_date DESC, record_time DESC, id DESC", params)
+    for row in rows:
+        # аналіз іншого типу (тип запису змінили) не показуємо
+        row["has_analysis"] = row.get("analysis_kind") == row.get("record_type")
+    return rows
+
+
+def backfill_light_columns(batch: int = 200) -> int:
+    """Заповнює легкі поля для записів, проаналізованих старими версіями коду."""
+    total = 0
+    while True:
+        rows = fetch_all("SELECT id, analysis_json FROM records WHERE analysis_json IS NOT NULL "
+                         "AND analysis_json != '' AND analysis_kind IS NULL LIMIT ?", (batch,))
+        if not rows:
+            return total
+        for row in rows:
+            fields = light_fields_from_json(row["analysis_json"])
+            fields["analysis_kind"] = fields["analysis_kind"] or "unknown"  # щоб не обробляти повторно
+            assignments = ", ".join(f"{k} = ?" for k in fields)
+            # analysis_kind IS NULL: якщо конвеєр щойно записав новий аналіз — не перетираємо його показники
+            total += execute(f"UPDATE records SET {assignments} WHERE id = ? AND analysis_kind IS NULL",
+                             (*fields.values(), row["id"]))
+
+
+def get_records_analyzed_since(since_iso: str) -> list[dict]:
+    """Записи, проаналізовані після моменту since_iso (UTC) — для щоденного звіту."""
+    rows = fetch_all(f"SELECT {_LIST_COLUMNS} FROM records WHERE analyzed_at IS NOT NULL AND analyzed_at > ? "
+                     f"ORDER BY analyzed_at", (since_iso,))
+    return [_decorate(r) for r in rows]
+
+
+def _like_pattern(text: str) -> str:
+    escaped = text.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def search_records(q: str, person_name: str | None = None, limit: int = 30,
+                   include_transcript: bool = True) -> list[dict]:
+    """Пошук у транскрипціях, аналізах, коментарях та іменах (без урахування регістру)."""
+    pattern = _like_pattern(q)
+    fields = ("person_name", "trainer_name", "manager_comment", "summary")
+    if include_transcript:
+        fields = ("transcription",) + fields
+    condition = " OR ".join(f"LOWER(COALESCE({f}, '')) LIKE ? ESCAPE '\\'" for f in fields)
+    select = f"{_LIST_COLUMNS}, transcription" if include_transcript else _LIST_COLUMNS
+    query = f"SELECT {select} FROM records WHERE ({condition})"
+    params = [pattern] * len(fields)
+    if person_name is not None:
+        query += " AND person_name = ?"
+        params.append(person_name)
+    query += " ORDER BY record_date DESC, id DESC LIMIT ?"
+    params.append(int(limit))
     return [_decorate(r) for r in fetch_all(query, params)]
+
+
+def rename_person(old: str, new: str) -> int:
+    """Обʼєднує/перейменовує людину в усіх записах і привʼязках користувачів."""
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(_sql("UPDATE records SET person_name = ?, auto_detect = 0 WHERE person_name = ?"), (new, old))
+        count = cur.rowcount
+        cur.execute(_sql("UPDATE records SET trainer_name = ? WHERE trainer_name = ?"), (new, old))
+        count += cur.rowcount
+        cur.execute(_sql("UPDATE users SET person_name = ? WHERE person_name = ?"), (new, old))
+        cur.execute(_sql("UPDATE app_settings SET key = ? WHERE key = ? AND NOT EXISTS "
+                         "(SELECT 1 FROM app_settings WHERE key = ?)"), (f"coach:{new}", f"coach:{old}", f"coach:{new}"))
+        cur.close()
+    return count
 
 
 def get_person_names(record_type=None) -> list[str]:
@@ -562,17 +697,65 @@ def enqueue_record(record_id: int, job_kind: str = "full", not_before: str | Non
     ) == 1
 
 
+_VALID_TRANSCRIPT_SQL = ("transcription IS NOT NULL AND transcription != '' "
+                         "AND transcription NOT LIKE '[ПОМИЛКА%'")
+
+
+REANALYSIS_BATCH_LIMIT = 500
+
+
+def enqueue_reanalysis(record_type: str, date_from: str | None, date_to: str | None,
+                       limit: int = REANALYSIS_BATCH_LIMIT) -> int:
+    """
+    Масовий переаналіз (після зміни чек-листа): записи з готовою транскрипцією, найсвіжіші
+    першими, не більше limit. Імʼя/тип не перевизначаються (auto_detect = 0).
+    """
+    select = (f"SELECT id FROM records WHERE record_type = ? AND status IN ('done', 'error') "
+              f"AND {_VALID_TRANSCRIPT_SQL}")
+    params = [record_type]
+    if date_from:
+        select += " AND record_date >= ?"
+        params.append(date_from)
+    if date_to:
+        select += " AND record_date <= ?"
+        params.append(date_to)
+    ids = [r["id"] for r in fetch_all(select + " ORDER BY record_date DESC, id DESC LIMIT ?", (*params, int(limit)))]
+    if not ids:
+        return 0
+    marks = ", ".join("?" for _ in ids)
+    return execute(
+        f"UPDATE records SET status = 'queued', job_kind = 'reanalyze', auto_detect = 0, error_message = NULL, "
+        f"locked_at = NULL, not_before = NULL, attempts = 0, updated_at = ? "
+        f"WHERE id IN ({marks}) AND status IN ('done', 'error')",
+        (utcnow_iso(), *ids),
+    )
+
+
+def count_reanalysis_candidates(record_type: str, date_from: str | None, date_to: str | None) -> int:
+    query = (f"SELECT COUNT(*) AS n FROM records WHERE record_type = ? AND status IN ('done', 'error') "
+             f"AND {_VALID_TRANSCRIPT_SQL}")
+    params = [record_type]
+    if date_from:
+        query += " AND record_date >= ?"
+        params.append(date_from)
+    if date_to:
+        query += " AND record_date <= ?"
+        params.append(date_to)
+    return fetch_one(query, params)["n"]
+
+
 def claim_next_job(source: str | None = None) -> dict | None:
     """Атомарно бере наступний запис з черги (безпечно для кількох процесів)."""
     now = utcnow_iso()
     query = ("SELECT id FROM records WHERE status = 'queued' "
              "AND (not_before IS NULL OR not_before <= ?)")
+    # масовий переаналіз — в останню чергу, щоб не затримувати нові дзвінки
     params = [now]
     if source:
         query += " AND source = ?"
         params.append(source)
     for _ in range(5):
-        row = fetch_one(query + " ORDER BY id LIMIT 1", params)
+        row = fetch_one(query + " ORDER BY CASE WHEN job_kind = 'reanalyze' THEN 1 ELSE 0 END, id LIMIT 1", params)
         if not row:
             return None
         claimed = execute(
@@ -707,6 +890,12 @@ def get_all_users():
     return fetch_all("SELECT * FROM users ORDER BY created_at DESC")
 
 
+def get_linked_person_names() -> set[str]:
+    """Імена в записах, привʼязані до користувачів (співробітники)."""
+    rows = fetch_all("SELECT DISTINCT person_name FROM users WHERE person_name IS NOT NULL AND person_name != ''")
+    return {r["person_name"] for r in rows}
+
+
 def count_users() -> int:
     return fetch_one("SELECT COUNT(*) AS n FROM users")["n"]
 
@@ -717,11 +906,12 @@ def count_active_admins() -> int:
     )["n"]
 
 
-def create_user(email, name, password_hash, role="viewer") -> bool:
+def create_user(email, name, password_hash, role="viewer", person_name="") -> bool:
     try:
         insert(
-            "INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-            (email.lower().strip(), name.strip(), password_hash, role, utcnow_iso()),
+            "INSERT INTO users (email, name, password_hash, role, created_at, person_name) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (email.lower().strip(), name.strip(), password_hash, role, utcnow_iso(), (person_name or "").strip()),
         )
         return True
     except Exception as e:  # дублікат email тощо
@@ -729,9 +919,10 @@ def create_user(email, name, password_hash, role="viewer") -> bool:
         return False
 
 
-def update_user(user_id, name=None, role=None, is_active=None, password_hash=None):
+def update_user(user_id, name=None, role=None, is_active=None, password_hash=None, person_name=None):
     fields = {k: v for k, v in (("name", name), ("role", role), ("is_active", is_active),
-                                ("password_hash", password_hash)) if v is not None}
+                                ("password_hash", password_hash), ("person_name", person_name))
+              if v is not None}
     if not fields:
         return 0
     assignments = ", ".join(f"{k} = ?" for k in fields)

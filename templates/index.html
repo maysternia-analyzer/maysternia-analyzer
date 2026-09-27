@@ -1,28 +1,36 @@
 {% extends "base.html" %}
-{% from "_macros.html" import score_color, score_cell, status_badge, level_badge, check_mark %}
+{% from "_macros.html" import score_color, score_cell, status_badge, level_badge, checklist_cell, pagination, date_cell, deal_cell, empty_state %}
 {% block title %}Дашборд — Майстерня Аналізатор{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <h1>🏠 Дашборд</h1>
+  <a class="btn btn-outline btn-sm" href="{{ url_for('export_csv', **filters) }}">⬇️ Експорт в Excel</a>
 </div>
 
 <div class="stats-grid">
   <div class="stat-card">
     <div class="stat-label">Всього записів</div>
     <div class="stat-value">{{ stats.total }}</div>
-    <div class="stat-sub">{{ stats.lessons_total }} занять · {{ stats.sales_total }} продажів</div>
+    <div class="stat-sub">{{ stats.lessons_total }} {{ stats.lessons_total|plural('заняття', 'заняття', 'занять') }} · {{ stats.sales_total }} {{ stats.sales_total|plural('продаж', 'продажі', 'продажів') }}</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">Проаналізовано</div>
     <div class="stat-value">{{ stats.analyzed }}</div>
     <div class="stat-sub">{{ stats.in_progress }} в обробці · {{ stats.errors }} помилок</div>
   </div>
-  {% if stats.conversion is defined %}
+  {% if stats.conversion_real is defined %}
   <div class="stat-card">
     <div class="stat-label">Конверсія продажів</div>
-    <div class="stat-value" style="color:{% if stats.conversion>=60 %}var(--green){% elif stats.conversion>=35 %}var(--yellow){% else %}var(--red){% endif %}">{{ stats.conversion }}%</div>
-    <div class="stat-sub">високий шанс угоди (прогноз AI)</div>
+    <div class="stat-value" style="color:{% if stats.conversion_real>=40 %}var(--green){% elif stats.conversion_real>=20 %}var(--yellow){% else %}var(--red){% endif %}">{{ stats.conversion_real }}%</div>
+    <div class="stat-sub">продано {{ stats.sold }} з {{ stats.sold + stats.not_sold }} з відміченим результатом</div>
+  </div>
+  {% endif %}
+  {% if stats.ai_high_share is defined %}
+  <div class="stat-card">
+    <div class="stat-label">Високий шанс угоди (AI)</div>
+    <div class="stat-value" style="color:{% if stats.ai_high_share>=60 %}var(--green){% elif stats.ai_high_share>=35 %}var(--yellow){% else %}var(--red){% endif %}">{{ stats.ai_high_share }}%</div>
+    <div class="stat-sub">прогноз AI по проаналізованих продажах</div>
   </div>
   {% endif %}
   {% if stats.avg_lesson_score is defined %}
@@ -81,6 +89,7 @@
         <option value="sales" {{ 'selected' if filters.type=='sales' }}>Продаж менеджера</option>
       </select>
     </div>
+    {% if people %}
     <div class="filter-group">
       <label class="filter-label">Імʼя</label>
       <select name="person" onchange="this.form.submit()">
@@ -90,6 +99,7 @@
         {% endfor %}
       </select>
     </div>
+    {% endif %}
     <div class="filter-group">
       <label class="filter-label">Від</label>
       <input type="date" name="date_from" value="{{ filters.date_from }}" onchange="this.form.submit()">
@@ -122,62 +132,36 @@
           <th data-sort="2">Імʼя</th>
           <th data-sort="3">Шанс / залученість</th>
           <th data-sort="4">Оцінка</th>
-          <th>Потреба</th>
-          <th>Презентація</th>
-          <th>Заперечення</th>
-          <th>Наступна дія</th>
+          <th data-sort="5">Чек-ліст</th>
+          <th>Резюме</th>
           <th>Статус</th>
         </tr>
       </thead>
       <tbody>
         {% for r in records %}
-        {% set a = r.analysis or {} %}
         <tr class="clickable" data-href="{{ url_for('record_detail', record_id=r.id) }}">
-          <td style="white-space:nowrap" data-val="{{ r.record_date }} {{ r.record_time }}">
-            <div>{{ r.record_date }}</div>
-            {% if r.record_time %}<div style="font-size:12px;color:var(--text-muted)">{{ r.record_time }}</div>{% endif %}
-          </td>
+          {{ date_cell(r) }}
           <td>
             {% if r.record_type == 'lesson' %}<span class="badge badge-blue">🎓 Заняття</span>
             {% else %}<span class="badge badge-green">💰 Продаж</span>{% endif %}
           </td>
           <td style="font-weight:500">{{ r.person_name }}</td>
-          {% if r.record_type == 'sales' and a.deal_chance %}
-            <td data-val="{{ a.deal_chance_percent|default(0) }}">
-              {% if a.deal_chance == 'Високий' %}<span class="badge badge-green">{{ a.deal_chance_percent|default(0) }}%</span>
-              {% elif a.deal_chance == 'Середній' %}<span class="badge badge-yellow">{{ a.deal_chance_percent|default(0) }}%</span>
-              {% else %}<span class="badge badge-red">{{ a.deal_chance_percent|default(0) }}%</span>{% endif %}
-            </td>
-          {% elif r.record_type == 'lesson' and a.engagement_level %}
-            <td data-val="{{ 3 if a.engagement_level=='Високий' else 2 if a.engagement_level=='Середній' else 1 }}">{{ level_badge(a.engagement_level) }}</td>
+          {% if r.record_type == 'sales' %}
+            {{ deal_cell(r) }}
+          {% elif r.has_analysis and r.engagement_level %}
+            <td data-val="{{ 3 if r.engagement_level=='Високий' else 2 if r.engagement_level=='Середній' else 1 }}">{{ level_badge(r.engagement_level) }}</td>
           {% else %}<td data-val="0">—</td>{% endif %}
-          {% if r.record_type == 'sales' and a.checklist_score is defined %}
-            {{ score_cell(a.checklist_score) }}
-          {% elif r.record_type == 'lesson' and a.overall_score is defined %}
-            {{ score_cell(a.overall_score) }}
-          {% else %}
-            {{ score_cell(none) }}
-          {% endif %}
-          {% if r.record_type == 'sales' and a %}
-            <td>{{ check_mark(a.need_identified) }}</td>
-            <td>{{ check_mark(a.presentation_done) }}</td>
-            <td>{{ check_mark(a.objections_handled) }}</td>
-            <td>{{ check_mark(a.next_step_offered) }}</td>
-          {% elif r.record_type == 'sales' %}
-            <td>—</td><td>—</td><td>—</td><td>—</td>
-          {% else %}
-            <td colspan="4" style="color:var(--text-muted)">Пробне заняття</td>
-          {% endif %}
+          {{ score_cell(r.score if r.has_analysis else none) }}
+          {{ checklist_cell(r) }}
+          <td class="summary-cell">{% if r.has_analysis %}{{ (r.summary or '')[:140] }}{% if (r.summary or '')|length > 140 %}…{% endif %}{% endif %}</td>
           <td>{{ status_badge(r) }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    {{ pagination(pager) }}
     {% else %}
-    <div style="padding:60px;text-align:center;color:var(--text-muted)">
-      <div style="font-size:48px;margin-bottom:16px">📂</div>
-      <p>Записів поки немає. <a href="{{ url_for('upload') }}">Завантажте перший запис →</a></p>
-    </div>
+    {{ empty_state('📂', filters.type or filters.person or filters.date_from or filters.date_to, 'Записів поки немає.', current_user.is_staff()) }}
     {% endif %}
   </div>
 </div>

@@ -2,20 +2,29 @@
 {% from "_macros.html" import score_color, level_badge %}
 {% block title %}{{ record.person_name }} · {{ record.record_date }} — Майстерня Аналізатор{% endblock %}
 
+{% macro timecode(value) -%}
+{% if value %}<button type="button" class="tc" data-t="{{ value }}" title="Перейти до моменту">{{ value }}</button>{% endif %}
+{%- endmacro %}
+
 {% block content %}
 {% set a = record.analysis or {} %}
 {% set active = record.status in ('queued', 'processing', 'analyzing') %}
+{% set staff = current_user.is_staff() %}
+{% set is_lesson = record.record_type == 'lesson' %}
+{% set analysis_only = record.job_kind in ('analyze', 'reanalyze') %}
+{% set show_card = (not active) or record.analysis %}
 
 <div class="page-header">
-  <a href="{{ url_for('dashboard') }}" style="color:var(--text-muted);font-size:13px">← Дашборд</a>
+  <a href="{{ back_url }}" style="color:var(--text-muted);font-size:13px">← Назад</a>
   <h1>
-    {{ '🎓' if record.record_type == 'lesson' else '💰' }}
-    {{ record.person_name }}
+    {{ '🎓' if is_lesson else '💰' }}
+    <a href="{{ url_for('person_page', name=record.person_name) }}" style="color:inherit">{{ record.person_name }}</a>
     <span style="color:var(--text-muted);font-weight:400;font-size:16px">· {{ record.record_date }}{% if record.record_time %} {{ record.record_time }}{% endif %}</span>
   </h1>
-  <span class="badge {{ 'badge-blue' if record.record_type == 'lesson' else 'badge-green' }}">
-    {{ 'Пробне заняття' if record.record_type == 'lesson' else 'Продаж менеджера' }}
+  <span class="badge {{ 'badge-blue' if is_lesson else 'badge-green' }}">
+    {{ 'Пробне заняття' if is_lesson else 'Продаж менеджера' }}
   </span>
+  {% if staff %}
   <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
     <button class="btn btn-outline btn-sm" id="edit-meta-btn" type="button">✏️ Редагувати</button>
     {% if current_user.is_admin() %}
@@ -26,14 +35,16 @@
     </form>
     {% endif %}
   </div>
+  {% endif %}
 </div>
 
+{% if staff %}
 <form id="edit-meta-form" data-record-id="{{ record.id }}" data-current-type="{{ record.record_type }}" class="edit-meta-form" style="display:none">
   <div class="filter-group">
     <label class="filter-label">Тип запису</label>
     <select name="record_type" class="form-control" style="width:auto">
-      <option value="lesson" {{ 'selected' if record.record_type=='lesson' }}>Пробне заняття</option>
-      <option value="sales" {{ 'selected' if record.record_type=='sales' }}>Продаж менеджера</option>
+      <option value="lesson" {{ 'selected' if is_lesson }}>Пробне заняття</option>
+      <option value="sales" {{ 'selected' if not is_lesson }}>Продаж менеджера</option>
     </select>
   </div>
   <div class="filter-group">
@@ -43,15 +54,22 @@
   <button type="submit" class="btn btn-primary btn-sm">Зберегти</button>
   <span style="font-size:12px;color:var(--text-muted)">Зміна типу автоматично перезапускає AI-аналіз.</span>
 </form>
+{% endif %}
 
-{% if active %}
+{% if active and record.analysis %}
+<div class="alert alert-info" id="processing-card" data-record-id="{{ record.id }}" data-status="{{ record.status }}">
+  🔄 <strong>Запис оновлюється</strong> — <span id="processing-status">{% if record.status == 'queued' %}в черзі{% else %}AI аналізує розмову{% endif %}</span>.
+  Нижче — попередній аналіз; сторінка оновиться автоматично.
+  <span id="processing-note" style="display:block;font-size:12px;margin-top:4px">{{ record.error_message or '' }}</span>
+</div>
+{% elif active %}
 <div class="card processing-card" id="processing-card" data-record-id="{{ record.id }}" data-status="{{ record.status }}">
   <div class="spinner"></div>
   <div style="font-size:17px;font-weight:600;margin-bottom:8px" id="processing-status">
     {% if record.status == 'queued' and record.not_before and record.not_before > now_utc %}
       Очікуємо транскрипцію від Zoom (перевірка о {{ record.not_before|localtime('%H:%M') }})
     {% elif record.status == 'queued' %}В черзі на обробку...
-    {% elif record.status == 'processing' %}Отримуємо транскрипцію запису...
+    {% elif record.status == 'processing' and not analysis_only %}Отримуємо транскрипцію запису...
     {% else %}AI аналізує розмову...{% endif %}
   </div>
   <p style="color:var(--text-muted);font-size:14px" id="processing-note">
@@ -64,7 +82,8 @@
   ⚠️ Сталась помилка під час обробки.<br>
   <small>{{ record.error_message or ('Помилка AI-аналізу' if has_transcript else record.transcription) or 'Невідома помилка' }}</small>
 </div>
-<div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+{% if staff %}
+<div style="margin:16px 0;display:flex;gap:12px;flex-wrap:wrap;align-items:center">
   {% if has_transcript %}
   <button class="btn btn-primary reanalyze-btn" type="button" data-record-id="{{ record.id }}" data-mode="analyze">🔄 Проаналізувати повторно</button>
   <span style="font-size:13px;color:var(--text-muted)">Транскрипція є — буде запущено лише AI-аналіз.</span>
@@ -77,14 +96,15 @@
   {% endif %}
 </div>
 {% endif %}
+{% endif %}
 
-{% if not active %}
+{% if show_card %}
 {% if record.analysis_stale %}
 <div class="alert alert-error" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
   Наявний AI-аналіз зроблено для іншого типу запису.
-  {% if has_transcript %}
+  {% if staff and has_transcript %}
   <button class="btn btn-primary btn-sm reanalyze-btn" type="button" data-record-id="{{ record.id }}" data-mode="analyze">🔄 Проаналізувати повторно</button>
-  {% elif source == 'zoom' or (source == 'upload' and media_url) %}
+  {% elif staff and (source == 'zoom' or (source == 'upload' and media_url)) %}
   <button class="btn btn-primary btn-sm reanalyze-btn" type="button" data-record-id="{{ record.id }}" data-mode="full">🔄 Обробити запис заново</button>
   {% endif %}
 </div>
@@ -93,54 +113,26 @@
 <div class="detail-grid">
   <div>
     {% if record.analysis %}
-    {% if record.record_type == 'lesson' %}
-    {% set s = a.overall_score|default(0) %}
+    {# ── Підсумок ── #}
     <div class="card" style="margin-bottom:16px">
-      <div style="display:flex;gap:32px;align-items:center;flex-wrap:wrap">
+      <div class="summary-row">
+        {% set s = main_score(a, record.record_type) %}
         <div>
-          <div class="stat-label">Загальна оцінка</div>
-          <div class="stat-value" style="color:{{ score_color(s) }}">{{ s }}%</div>
+          <div class="stat-label">{{ 'Загальна оцінка' if is_lesson else 'Чек-ліст' }}</div>
+          <div class="stat-value" style="color:{{ score_color(s) }}">{{ s if s is not none else '—' }}%</div>
         </div>
-        <div>
-          <div class="stat-label">Залученість учасників</div>
-          <div style="margin-top:6px">{{ level_badge(a.engagement_level) }}</div>
-        </div>
-        <div style="flex:1;min-width:200px">
-          <div class="stat-label">Висновок</div>
-          <div style="font-size:14px;color:var(--text-muted);margin-top:4px">{{ a.summary|default('') }}</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom:16px">
-      <div class="section-title">Чек-ліст заняття</div>
-      {% for key, label in LESSON_CRITERIA %}
-        {% set item = a.get(key) if a.get(key) is mapping else {} %}
-        <div class="checklist-item">
-          <span class="check-icon">{{ '✅' if item.get('result') else '❌' }}</span>
-          <div>
-            <div class="check-title">{{ label }}</div>
-            {% if item.get('comment') %}<div class="check-comment">{{ item.get('comment') }}</div>{% endif %}
-          </div>
-        </div>
-      {% endfor %}
-    </div>
-
-    <div class="card" style="margin-bottom:16px">
-      <div class="section-title">Що зроблено добре</div>
-      <p class="text-block">{{ a.strengths or '—' }}</p>
-      <div class="section-title" style="margin-top:20px">Що покращити</div>
-      <p class="text-block">{{ a.improvements or '—' }}</p>
-    </div>
-
-    {% else %}
-    {% set s = a.checklist_score|default(0) %}
-    <div class="card" style="margin-bottom:16px">
-      <div style="display:flex;gap:32px;align-items:center;flex-wrap:wrap">
+        {% if is_lesson %}
+        {% if a.checklist_score is defined %}
         <div>
           <div class="stat-label">Чек-ліст</div>
-          <div class="stat-value" style="color:{{ score_color(s) }}">{{ s }}%</div>
+          <div class="stat-value" style="font-size:24px;color:{{ score_color(a.checklist_score) }}">{{ a.checklist_score }}%</div>
         </div>
+        {% endif %}
+        <div>
+          <div class="stat-label">Залученість</div>
+          <div style="margin-top:6px">{{ level_badge(a.engagement_level) }}</div>
+        </div>
+        {% else %}
         <div>
           <div class="stat-label">Шанс угоди</div>
           <div style="margin-top:6px">
@@ -152,61 +144,165 @@
           <div class="stat-label">Теплота ліда</div>
           <div style="margin-top:6px">{{ level_badge(a.lead_temperature, icons=true) }}</div>
         </div>
+        {% endif %}
       </div>
+      {% if a.summary %}<p class="text-block" style="margin-top:14px;color:var(--text)">{{ a.summary }}</p>{% endif %}
     </div>
 
+    {# ── Наступний крок і ризики (продаж) ── #}
+    {% if not is_lesson and (a.next_step is mapping or a.risks) %}
     <div class="card" style="margin-bottom:16px">
-      <div class="section-title">Чек-ліст продажу</div>
-      {% for key, label in SALES_CRITERIA %}
-        {% set item = a.get(key) if a.get(key) is mapping else {} %}
-        <div class="checklist-item">
-          <span class="check-icon">{{ '✅' if item.get('result') else '❌' }}</span>
-          <div>
-            <div class="check-title">{{ label }}</div>
-            {% set detail = item.get('details') or item.get('comment') %}
-            {% if detail %}<div class="check-comment">{{ detail }}</div>{% endif %}
-          </div>
+      {% if a.next_step is mapping %}
+      <div class="section-title">➡️ Наступний крок</div>
+      {% if a.next_step.agreed %}
+      <p class="text-block" style="color:var(--text)">✅ {{ a.next_step.description or 'Домовились' }}{% if a.next_step.deadline %} · <strong>{{ a.next_step.deadline }}</strong>{% endif %}</p>
+      {% else %}
+      <p class="text-block">❌ Конкретного наступного кроку не домовлено{% if a.next_step.description %}: {{ a.next_step.description }}{% endif %}</p>
+      {% endif %}
+      {% endif %}
+      {% if a.risks %}
+      <div class="section-title" style="margin-top:14px">⚠️ Ризики угоди</div>
+      <ul class="plain-list">
+        {% for r in a.risks %}<li><span class="badge badge-red">{{ r.category }}</span> {{ r.description }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ── Чек-лист ── #}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">Чек-ліст {{ 'заняття' if is_lesson else 'продажу' }}</div>
+      {% for item in criteria %}
+      <div class="checklist-item">
+        <span class="check-icon">{{ '✅' if item.result else '❌' }}</span>
+        <div style="flex:1;min-width:0">
+          <div class="check-title">{{ item.title }}{% if item.weight > 1 %} <span class="badge badge-gray" title="Вага критерію">×{{ item.weight }}</span>{% endif %}</div>
+          {% if item.comment %}<div class="check-comment">{{ item.comment }}</div>{% endif %}
+          {% if item.quote %}<div class="quote">{{ timecode(item.time) }} «{{ item.quote }}»</div>{% endif %}
         </div>
+      </div>
+      {% else %}
+      <p class="text-block">—</p>
       {% endfor %}
     </div>
 
-    {% if a.next_contact_script %}
+    {# ── Заперечення ── #}
+    {% if a.objections %}
     <div class="card" style="margin-bottom:16px">
-      <div class="section-title">📞 Скрипт наступного контакту</div>
-      <div class="script-box">{{ a.next_contact_script }}</div>
+      <div class="section-title">🚧 Заперечення клієнта</div>
+      {% for o in a.objections %}
+      <div class="objection">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="badge badge-yellow">{{ o.category }}</span>
+          <span>{{ '✅ відпрацьовано' if o.handled else '❌ не відпрацьовано' }}</span>
+        </div>
+        <div class="quote">«{{ o.text }}»</div>
+        {% if o.manager_response %}<div class="check-comment"><strong>Менеджер:</strong> {{ o.manager_response }}</div>{% endif %}
+        {% if o.better_response %}<div class="script-box" style="margin-top:6px">💡 {{ o.better_response }}</div>{% endif %}
+      </div>
+      {% endfor %}
     </div>
     {% endif %}
 
+    {# ── Ключові моменти ── #}
+    {% if a.key_moments %}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">📍 Ключові моменти</div>
+      {% for m in a.key_moments %}
+      <div class="moment {{ 'moment-good' if m.positive else 'moment-bad' }}">
+        <div>{{ timecode(m.time) }} {{ '👍' if m.positive else '👎' }} {% if m.quote %}«{{ m.quote }}»{% endif %}</div>
+        {% if m.comment %}<div class="check-comment">{{ m.comment }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if is_lesson %}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">Що зроблено добре</div>
+      <p class="text-block">{{ a.strengths or '—' }}</p>
+      <div class="section-title" style="margin-top:20px">Що покращити</div>
+      <p class="text-block">{{ a.improvements or '—' }}</p>
+    </div>
+    {% else %}
     {% if a.top_mistakes %}
     <div class="card" style="margin-bottom:16px">
-      <div class="section-title">Найчастіші помилки</div>
-      <ul class="mistakes-list">
-        {% for m in a.top_mistakes %}<li>{{ m }}</li>{% endfor %}
-      </ul>
+      <div class="section-title">Помилки</div>
+      <ul class="mistakes-list">{% for m in a.top_mistakes %}<li>{{ m }}</li>{% endfor %}</ul>
     </div>
     {% endif %}
-
     {% if a.recommendations %}
     <div class="card" style="margin-bottom:16px">
       <div class="section-title">Рекомендації AI</div>
       <p class="text-block">{{ a.recommendations }}</p>
     </div>
     {% endif %}
-    {% endif %}{# end sales #}
+    {% endif %}
+
+    {# ── Коучинг ── #}
+    {% if a.coaching_phrases %}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title">🗣 Що варто було сказати</div>
+      {% for p in a.coaching_phrases %}
+      <div class="coaching">
+        {% if p.situation %}<div class="check-comment">{{ p.situation }}</div>{% endif %}
+        <div class="script-box">{{ p.phrase }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if a.next_contact_script %}
+    <div class="card" style="margin-bottom:16px">
+      <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>📞 Скрипт наступного контакту</span>
+        <button type="button" class="btn btn-ghost btn-sm copy-btn" data-copy-target="next-contact-script">📋 Копіювати</button>
+      </div>
+      <div class="script-box" id="next-contact-script">{{ a.next_contact_script }}</div>
+    </div>
+    {% endif %}
     {% if a._truncated %}
     <p style="font-size:12px;color:var(--text-muted)">Транскрипція надзвичайно довга — середину скорочено перед аналізом.</p>
     {% endif %}
-    {% elif record.status != 'error' %}
-    <div class="card" style="margin-bottom:16px;color:var(--text-muted)">AI-аналізу ще немає.</div>
+    {% else %}
+    <div class="card" style="margin-bottom:16px;color:var(--text-muted)">{{ 'Аналізу немає — див. помилку вище.' if record.status == 'error' else 'AI-аналізу ще немає.' }}</div>
     {% endif %}{# end analysis #}
   </div>
 
   <div>
-    {% if has_transcript %}
+    {% if staff and has_transcript and record.status == 'done' %}
     <div class="card card-sm" style="margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn btn-outline btn-sm reanalyze-btn" type="button" data-record-id="{{ record.id }}" data-mode="analyze">
         🔄 Проаналізувати повторно
       </button>
+    </div>
+    {% endif %}
+
+    {% if talk %}
+    <div class="card card-sm" style="margin-bottom:16px">
+      <div class="section-title">🎙 Аналітика мовлення</div>
+      {% for sp in talk.speakers %}
+      <div style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;font-size:13px"><span>{{ sp.name }}</span><span style="color:var(--text-muted)">{{ sp.questions }} {{ sp.questions|plural('запитання', 'запитання', 'запитань') }}</span></div>
+        <div class="score-bar-track" style="height:6px"><div class="talk-bar" style="width:{{ sp.share }}%"></div></div>
+        <div style="font-size:12px;color:var(--text-muted)">{{ sp.share }}% мовлення</div>
+      </div>
+      {% endfor %}
+      {% if talk.longest %}<p class="hint">Найдовший монолог: {{ talk.longest.speaker }} — {{ (talk.longest.seconds // 60) }} хв {{ talk.longest.seconds % 60 }} с</p>{% endif %}
+    </div>
+    {% endif %}
+
+    {# ── Клієнт (продаж) ── #}
+    {% if not is_lesson and a.client is mapping and (a.client.name or a.client.goal or a.client.pains or a.client.questions or a.client.budget) %}
+    <div class="card card-sm" style="margin-bottom:16px">
+      <div class="section-title">👤 Клієнт</div>
+      <table class="kv-table">
+        {% if a.client.name %}<tr><td>Імʼя</td><td>{{ a.client.name }}</td></tr>{% endif %}
+        {% if a.client.goal %}<tr><td>Мета</td><td>{{ a.client.goal }}</td></tr>{% endif %}
+        {% if a.client.pains %}<tr><td>Болі</td><td>{{ a.client.pains|join('; ') }}</td></tr>{% endif %}
+        {% if a.client.questions %}<tr><td>Запитання</td><td>{{ a.client.questions|join('; ') }}</td></tr>{% endif %}
+        {% if a.client.budget %}<tr><td>Бюджет / ціна</td><td>{{ a.client.budget }}</td></tr>{% endif %}
+      </table>
     </div>
     {% endif %}
 
@@ -215,11 +311,11 @@
     <div class="card card-sm" style="margin-bottom:16px">
       <div class="section-title">Аудіо</div>
       {% if ext in ('mp4', 'mov', 'webm') %}
-      <video controls preload="metadata" style="width:100%;border-radius:8px;max-height:200px;background:#000">
+      <video id="media-player" controls preload="metadata" style="width:100%;border-radius:8px;max-height:200px;background:#000">
         <source src="{{ media_url }}">
       </video>
       {% else %}
-      <audio controls preload="metadata" style="width:100%"><source src="{{ media_url }}"></audio>
+      <audio id="media-player" controls preload="metadata" style="width:100%"><source src="{{ media_url }}"></audio>
       {% endif %}
     </div>
     {% endif %}
@@ -231,14 +327,23 @@
     </div>
     {% endif %}
 
+    {% if show_transcript %}
     <div class="card card-sm" style="margin-bottom:16px">
       <div class="section-title">Транскрипція</div>
-      <div class="transcription-box">{{ transcript if has_transcript else 'Транскрипція відсутня' }}</div>
+      <div class="transcription-box" id="transcript">
+        {% for line in transcript_lines %}
+        <div class="t-line"{% if line.seconds is not none %} data-t="{{ line.seconds }}"{% endif %}>{% if line.label %}<button type="button" class="tc" data-t="{{ line.label }}">{{ line.label }}</button> {% endif %}{{ line.text }}</div>
+        {% endfor %}
+      </div>
     </div>
+    {% elif not has_transcript %}
+    <div class="card card-sm" style="margin-bottom:16px;color:var(--text-muted)">Транскрипція відсутня</div>
+    {% endif %}
 
-    {% if record.record_type == 'sales' %}
+    {% if not is_lesson %}
     <div class="card card-sm" style="margin-bottom:16px">
       <div class="section-title">🏆 Результат продажу</div>
+      {% if staff %}
       <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
         <button type="button" class="btn btn-sm sale-result-btn {% if record.sale_made == 1 %}btn-primary{% else %}btn-outline{% endif %}"
                 data-val="1" data-record-id="{{ record.id }}">✅ Продано</button>
@@ -255,6 +360,9 @@
         <button type="button" class="btn btn-primary btn-sm" id="save-amount-btn" data-record-id="{{ record.id }}">Зберегти</button>
       </div>
       {% endif %}
+      {% else %}
+      <p class="text-block">{% if record.sale_made == 1 %}✅ Продано{% if record.sale_amount %} · {{ record.sale_amount|money }} ₴{% endif %}{% elif record.sale_made == 0 %}❌ Не продано{% else %}Результат ще не відмічено{% endif %}</p>
+      {% endif %}
       {% if record.trainer_name %}
       <div style="margin-top:10px;font-size:13px;color:var(--text-muted)">
         Тренер: <strong style="color:var(--text)">{{ record.trainer_name }}</strong>
@@ -265,11 +373,15 @@
 
     <div class="card card-sm">
       <div class="section-title">💬 Коментар керівника</div>
+      {% if staff %}
       <textarea class="form-control" id="comment-field" rows="4" maxlength="10000"
                 placeholder="Додайте власний коментар або нотатки...">{{ record.manager_comment or '' }}</textarea>
       <button type="button" class="btn btn-primary btn-sm" style="margin-top:10px" id="save-comment-btn" data-record-id="{{ record.id }}">
         Зберегти коментар
       </button>
+      {% else %}
+      <p class="text-block">{{ record.manager_comment or 'Коментарів поки немає.' }}</p>
+      {% endif %}
     </div>
   </div>
 </div>

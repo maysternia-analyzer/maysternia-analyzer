@@ -141,9 +141,17 @@ def sample_lesson_analysis(score=80):
 
 def sample_sales_analysis(score=60, chance="Середній"):
     from services.analysis import normalize_sales
-    return normalize_sales({
+    result = normalize_sales({
         "need_identified": {"result": True, "details": "хоче впевненості"},
         "deal_chance": chance, "deal_chance_percent": 55, "lead_temperature": "Теплий",
-        "checklist_score": score, "top_mistakes": ["помилка"], "recommendations": "рекомендація",
-        "next_contact_script": "скрипт",
+        "top_mistakes": ["помилка"], "recommendations": "рекомендація", "next_contact_script": "скрипт",
+        "summary": "Менеджер виявив потребу, але не закрив угоду.",
+        "objections": [{"text": "Дорого", "category": "ціна", "handled": False, "manager_response": "…",
+                        "better_response": "Порівняймо з вартістю…"}],
+        "risks": [{"category": "немає наступного кроку", "description": "не домовились"}],
+        "next_step": {"agreed": False, "description": "", "deadline": ""},
+        "key_moments": [{"time": "00:01:05", "quote": "Це дорого", "comment": "заперечення", "positive": False}],
+        "coaching_phrases": [{"situation": "ціна", "phrase": "Давайте порахуємо вартість одного заняття"}],
     })
+    result["checklist_score"] = score  # у тестах оцінку задаємо напряму
+    return result

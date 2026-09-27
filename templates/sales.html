@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% from "_macros.html" import score_color, score_cell, status_badge, level_badge %}
+{% from "_macros.html" import score_color, score_cell, status_badge, level_badge, checklist_cell, pagination, date_cell, deal_cell, empty_state %}
 {% block title %}Продажі — Майстерня Аналізатор{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <h1>💰 Продажі менеджерів</h1>
+  <a class="btn btn-outline btn-sm" href="{{ url_for('export_csv', type='sales', person=filters.manager, trainer=filters.trainer, date_from=filters.date_from, date_to=filters.date_to) }}">⬇️ Експорт</a>
 </div>
 
 <div class="stats-grid">
@@ -18,11 +19,17 @@
     <div class="stat-value" style="color:var(--green)">{{ stats.sold }}</div>
     <div class="stat-sub">{{ stats.not_sold }} не закрито</div>
   </div>
-  {% if stats.conversion is defined %}
+  {% if stats.conversion_real is defined %}
   <div class="stat-card">
-    <div class="stat-label">AI-конверсія</div>
-    <div class="stat-value" style="color:{% if stats.conversion>=60 %}var(--green){% elif stats.conversion>=35 %}var(--yellow){% else %}var(--red){% endif %}">{{ stats.conversion }}%</div>
-    <div class="stat-sub">прогноз по чек-лісту</div>
+    <div class="stat-label">Конверсія</div>
+    <div class="stat-value" style="color:{% if stats.conversion_real>=40 %}var(--green){% elif stats.conversion_real>=20 %}var(--yellow){% else %}var(--red){% endif %}">{{ stats.conversion_real }}%</div>
+    <div class="stat-sub">серед записів з відміченим результатом</div>
+  </div>
+  {% elif stats.ai_high_share is defined %}
+  <div class="stat-card">
+    <div class="stat-label">Високий шанс угоди (AI)</div>
+    <div class="stat-value" style="color:{% if stats.ai_high_share>=60 %}var(--green){% elif stats.ai_high_share>=35 %}var(--yellow){% else %}var(--red){% endif %}">{{ stats.ai_high_share }}%</div>
+    <div class="stat-sub">прогноз AI; відмічайте «Продано» для реальної конверсії</div>
   </div>
   {% endif %}
   {% if stats.revenue > 0 %}
@@ -48,7 +55,7 @@
     {% for person, score in stats.by_person %}
     <div style="min-width:180px">
       <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
-        <span style="font-weight:500">{{ person }}</span>
+        <a style="font-weight:500" href="{{ url_for('person_page', name=person) }}">{{ person }}</a>
         <span style="color:{{ score_color(score) }}">{{ score }}%</span>
       </div>
       <div class="score-bar-track" style="height:8px"><div class="score-bar-fill" data-score="{{ score }}"></div></div>
@@ -60,6 +67,7 @@
 
 <form method="get" action="{{ url_for('sales_page') }}">
   <div class="filters">
+    {% if managers %}
     <div class="filter-group">
       <label class="filter-label">Менеджер</label>
       <select name="manager" onchange="this.form.submit()">
@@ -69,6 +77,7 @@
         {% endfor %}
       </select>
     </div>
+    {% endif %}
     {% if trainers %}
     <div class="filter-group">
       <label class="filter-label">Тренер</label>
@@ -113,42 +122,29 @@
       </thead>
       <tbody>
         {% for r in records %}
-        {% set a = r.analysis or {} %}
         <tr class="clickable" data-href="{{ url_for('record_detail', record_id=r.id) }}">
-          <td style="white-space:nowrap" data-val="{{ r.record_date }} {{ r.record_time }}">
-            <div>{{ r.record_date }}</div>
-            {% if r.record_time %}<div style="font-size:12px;color:var(--text-muted)">{{ r.record_time }}</div>{% endif %}
-          </td>
+          {{ date_cell(r) }}
           <td style="font-weight:500">{{ r.person_name }}</td>
           <td style="color:var(--text-muted);font-size:13px">{{ r.trainer_name or '—' }}</td>
-          {{ score_cell(a.checklist_score if a.checklist_score is defined else none) }}
-          {% if a.deal_chance %}
-            {% set pct = a.deal_chance_percent|default(0) %}
-            <td data-val="{{ pct }}">
-              {% if a.deal_chance == 'Високий' %}<span class="badge badge-green">{{ pct }}%</span>
-              {% elif a.deal_chance == 'Середній' %}<span class="badge badge-yellow">{{ pct }}%</span>
-              {% else %}<span class="badge badge-red">{{ pct }}%</span>{% endif %}
-            </td>
-          {% else %}<td data-val="0">—</td>{% endif %}
-          <td>{{ level_badge(a.lead_temperature, icons=true) }}</td>
+          {{ score_cell(r.score if r.has_analysis else none) }}
+          {{ deal_cell(r) }}
+          <td>{{ level_badge(r.lead_temperature if r.has_analysis else '', icons=true) }}</td>
           <td>
             {% if r.sale_made == 1 %}<span class="badge badge-green">✅ Продано</span>
             {% elif r.sale_made == 0 %}<span class="badge badge-red">❌ Не продано</span>
             {% else %}<span class="badge badge-gray">— Невідомо</span>{% endif %}
           </td>
           <td style="font-weight:600;color:var(--green)" data-val="{{ r.sale_amount or 0 }}">
-            {% if r.sale_amount %}{{ r.sale_amount|money }} ₴{% else %}—{% endif %}
+            {% if r.sale_amount and r.sale_made == 1 %}{{ r.sale_amount|money }} ₴{% else %}—{% endif %}
           </td>
           <td>{{ status_badge(r) }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    {{ pagination(pager) }}
     {% else %}
-    <div style="padding:60px;text-align:center;color:var(--text-muted)">
-      <div style="font-size:48px;margin-bottom:16px">💰</div>
-      <p>Продажів ще немає. <a href="{{ url_for('upload') }}">Завантажте запис →</a></p>
-    </div>
+    {{ empty_state('💰', filters.manager or filters.trainer or filters.date_from or filters.date_to, 'Продажів ще немає.', current_user.is_staff()) }}
     {% endif %}
   </div>
 </div>

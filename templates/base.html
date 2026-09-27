@@ -16,46 +16,66 @@
       <div class="sidebar-brand-title">Майстерня</div>
       <div class="sidebar-brand-sub">Аналізатор</div>
     </div>
+    <button type="button" class="menu-toggle" id="menu-toggle" aria-label="Меню" aria-expanded="false">☰</button>
   </div>
 
   <nav class="sidebar-nav">
-    <a href="{{ url_for('dashboard') }}" class="sidebar-link {{ 'active' if request.endpoint == 'dashboard' }}">
+    {% set ep = request.endpoint %}
+    <a href="{{ url_for('dashboard') }}" class="sidebar-link {{ 'active' if ep == 'dashboard' }}">
       <span class="sidebar-icon">🏠</span> Дашборд
     </a>
-    <a href="{{ url_for('lessons_page') }}" class="sidebar-link {{ 'active' if request.endpoint == 'lessons_page' }}">
+    <a href="{{ url_for('lessons_page') }}" class="sidebar-link {{ 'active' if ep == 'lessons_page' }}">
       <span class="sidebar-icon">🎓</span> Заняття
     </a>
-    <a href="{{ url_for('sales_page') }}" class="sidebar-link {{ 'active' if request.endpoint == 'sales_page' }}">
+    <a href="{{ url_for('sales_page') }}" class="sidebar-link {{ 'active' if ep == 'sales_page' }}">
       <span class="sidebar-icon">💰</span> Продажі
     </a>
-    <a href="{{ url_for('stats_page') }}" class="sidebar-link {{ 'active' if request.endpoint == 'stats_page' }}">
-      <span class="sidebar-icon">📊</span> Статистика
+    {% if current_user.is_authenticated and current_user.is_staff() %}
+    <a href="{{ url_for('team_page') }}" class="sidebar-link {{ 'active' if ep in ('team_page', 'person_page') }}">
+      <span class="sidebar-icon">👥</span> Команда
     </a>
-    <a href="{{ url_for('analytics_page') }}" class="sidebar-link {{ 'active' if request.endpoint == 'analytics_page' }}">
+    <a href="{{ url_for('analytics_page') }}" class="sidebar-link {{ 'active' if ep == 'analytics_page' }}">
       <span class="sidebar-icon">🧠</span> Аналітика
     </a>
+    {% elif current_user.is_authenticated and current_user.person_name %}
+    <a href="{{ url_for('person_page', name=current_user.person_name) }}" class="sidebar-link {{ 'active' if ep == 'person_page' }}">
+      <span class="sidebar-icon">📈</span> Мій профіль
+    </a>
+    {% endif %}
+    <a href="{{ url_for('search_page') }}" class="sidebar-link {{ 'active' if ep == 'search_page' }}">
+      <span class="sidebar-icon">🔎</span> Пошук
+    </a>
     {% if current_user.is_authenticated and current_user.is_admin() %}
-    <a href="{{ url_for('admin_system') }}" class="sidebar-link {{ 'active' if request.endpoint == 'admin_system' }}">
+    <div class="sidebar-section">Адміністрування</div>
+    <a href="{{ url_for('admin_checklists_index') }}" class="sidebar-link {{ 'active' if ep == 'admin_checklist' }}">
+      <span class="sidebar-icon">✅</span> Чек-листи
+    </a>
+    <a href="{{ url_for('admin_settings') }}" class="sidebar-link {{ 'active' if ep == 'admin_settings' }}">
+      <span class="sidebar-icon">🛠</span> Налаштування
+    </a>
+    <a href="{{ url_for('admin_users') }}" class="sidebar-link {{ 'active' if ep == 'admin_users' }}">
+      <span class="sidebar-icon">👥</span> Користувачі
+    </a>
+    <a href="{{ url_for('admin_system') }}" class="sidebar-link {{ 'active' if ep == 'admin_system' }}">
       <span class="sidebar-icon">⚙️</span> Система
     </a>
     {% endif %}
   </nav>
 
   <div class="sidebar-bottom">
+    {% if current_user.is_authenticated and current_user.is_staff() %}
     <a href="{{ url_for('upload') }}" class="btn btn-primary" style="width:100%;justify-content:center">
       + Новий запис
     </a>
+    {% endif %}
 
     {% if current_user.is_authenticated %}
     <div class="sidebar-user">
       <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px">{{ current_user.name }}</div>
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
-        {% if current_user.is_admin() %}👑 Адмін{% else %}👁 Переглядач{% endif %}
+        {% if current_user.is_admin() %}👑{% elif current_user.is_manager() %}🎧{% else %}👁{% endif %} {{ ROLE_LABELS.get(current_user.role, current_user.role) }}
       </div>
       <div style="display:flex;gap:6px">
-        {% if current_user.is_admin() %}
-        <a href="{{ url_for('admin_users') }}" class="btn btn-outline btn-sm" style="flex:1;justify-content:center;font-size:12px">👥 Юзери</a>
-        {% endif %}
         <form method="POST" action="{{ url_for('logout') }}" style="flex:1;display:flex">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center;font-size:12px">Вийти</button>

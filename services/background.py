@@ -16,7 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import database as db
-from services import pipeline, zoom
+from services import notify, pipeline, zoom
 from services.poller import poll_once
 
 log = logging.getLogger(__name__)
@@ -74,6 +74,10 @@ def _leader_main() -> None:
         requeued, failed = db.requeue_stale_jobs(STALE_MINUTES, max_attempts=pipeline.MAX_ATTEMPTS)
         if requeued or failed:
             log.info("Після перезапуску: повернуто в чергу %s, позначено помилкою %s", requeued, failed)
+        _backfill()
+    except Exception:
+        log.exception("Помилка стартового відновлення черги або заповнення показників")
+    try:
         removed = pipeline.cleanup_orphan_zoom_media()
         if removed:
             log.info("Видалено %s незавершених медіафайлів Zoom", removed)
@@ -90,6 +94,12 @@ def _leader_main() -> None:
     else:
         log.info("Zoom-синхронізацію вимкнено: ZOOM_* ключі не задані")
     _job_loop()
+
+
+def _backfill() -> None:
+    filled = db.backfill_light_columns()
+    if filled:
+        log.info("Заповнено показники для %s записів старих версій", filled)
 
 
 def _job_loop() -> None:
@@ -141,8 +151,11 @@ def _maintenance_loop() -> None:
                 "concurrency": CONCURRENCY, "last_poll_at": _poll_state["at"],
                 "last_poll_result": _poll_state["result"], "last_poll_error": _poll_state["error"],
             }, ensure_ascii=False))
+            notify.send_daily_digest_if_due()
             if iteration % 60 == 0:
                 db.prune_webhook_logs()
+            if iteration % 10 == 0:
+                _backfill()  # записи, дописані старою версією під час деплою
         except Exception:
             log.exception("Помилка обслуговування черги")
 

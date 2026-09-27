@@ -182,7 +182,7 @@ def test_download_transcript_parses_vtt(monkeypatch, zoom_env):
                                content=vtt, close=lambda: None)
 
     monkeypatch.setattr(zoom.requests, "get", fake_get)
-    assert zoom.download_transcript("https://zoom.us/rec/download/vtt") == "Олена: Добрий день"
+    assert zoom.download_transcript("https://zoom.us/rec/download/vtt") == "[00:00:01] Олена: Добрий день"
     assert seen["params"] == {"access_token": "cached-token"}
 
 

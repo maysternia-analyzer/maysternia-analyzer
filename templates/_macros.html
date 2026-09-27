@@ -31,3 +31,61 @@
 {% macro check_mark(item) -%}
 {% if item is mapping %}{{ '✅' if item.get('result') else '❌' }}{% else %}—{% endif %}
 {%- endmacro %}
+
+{% macro checklist_cell(r) -%}
+{% if r.has_analysis and r.checklist_total %}{% set done, total = r.checklist_done or 0, r.checklist_total %}
+<td data-val="{{ (done / total * 100)|round(1) }}"><span class="badge {{ 'badge-green' if done == total else 'badge-yellow' if done / total >= 0.5 else 'badge-red' }}">{{ done }}/{{ total }}</span></td>
+{% else %}<td data-val="-1">—</td>{% endif %}
+{%- endmacro %}
+
+{% macro date_cell(r) -%}
+<td style="white-space:nowrap" data-val="{{ r.record_date }} {{ r.record_time }}">
+  <a class="row-link" href="{{ url_for('record_detail', record_id=r.id) }}">{{ r.record_date }}</a>
+  {% if r.record_time %}<div style="font-size:12px;color:var(--text-muted)">{{ r.record_time }}</div>{% endif %}
+</td>
+{%- endmacro %}
+
+{% macro deal_cell(r) -%}
+{% if r.has_analysis and r.deal_chance %}
+<td data-val="{{ r.deal_chance_percent or 0 }}"><span class="badge {{ 'badge-green' if r.deal_chance == 'Високий' else 'badge-yellow' if r.deal_chance == 'Середній' else 'badge-red' }}">{{ r.deal_chance_percent or 0 }}%</span></td>
+{% else %}<td data-val="0">—</td>{% endif %}
+{%- endmacro %}
+
+{% macro empty_state(icon, filtered, text, can_upload) -%}
+<div style="padding:60px;text-align:center;color:var(--text-muted)">
+  <div style="font-size:48px;margin-bottom:16px">{{ icon }}</div>
+  {% if filtered %}<p>За вибраними фільтрами нічого не знайдено.</p>
+  {% else %}<p>{{ text }}{% if can_upload %} <a href="{{ url_for('upload') }}">Завантажте запис →</a>{% endif %}</p>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro pagination(pager) -%}
+{% if pager and pager.pages > 1 %}
+<div class="pagination">
+  {% if pager.prev_url %}<a class="btn btn-ghost btn-sm" href="{{ pager.prev_url }}">← Назад</a>{% endif %}
+  <span>Сторінка {{ pager.page }} з {{ pager.pages }} · {{ pager.total }} записів</span>
+  {% if pager.next_url %}<a class="btn btn-ghost btn-sm" href="{{ pager.next_url }}">Далі →</a>{% endif %}
+</div>
+{% endif %}
+{%- endmacro %}
+
+{% macro sparkline(points, width=600, height=140) -%}
+{% if points %}
+<svg class="sparkline" viewBox="0 0 {{ width }} {{ height }}" role="img" aria-label="Динаміка оцінок">
+  {% for y in (25, 50, 75) %}
+  <line x1="0" x2="{{ width }}" y1="{{ height - 12 - (height - 24) * y / 100 }}" y2="{{ height - 12 - (height - 24) * y / 100 }}" class="sparkline-grid"/>
+  {% endfor %}
+  <polyline fill="none" class="sparkline-line" points="{% for p in points %}{{ p.x }},{{ p.y }} {% endfor %}"/>
+  {% for p in points %}
+  <a href="{{ url_for('record_detail', record_id=p.id) }}"><circle cx="{{ p.x }}" cy="{{ p.y }}" r="4" class="sparkline-dot {{ 'dot-green' if p.score >= 75 else 'dot-yellow' if p.score >= 50 else 'dot-red' }}"><title>{{ p.date }} — {{ p.score }}%</title></circle></a>
+  {% endfor %}
+</svg>
+{% endif %}
+{%- endmacro %}
+
+{% macro rate_bar(rate) -%}
+<div class="score-bar">
+  <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ rate }}"></div></div>
+  <span class="score-bar-num" style="color:{{ score_color(rate) }}">{{ rate }}%</span>
+</div>
+{%- endmacro %}

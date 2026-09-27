@@ -27,6 +27,15 @@ window.apiPost = apiPost;
 
 document.addEventListener("DOMContentLoaded", () => {
 
+  // ── Мобільне меню ──────────────────────────────────────────────────────────
+  const menuToggle = document.getElementById("menu-toggle");
+  if (menuToggle) {
+    menuToggle.addEventListener("click", () => {
+      const open = document.body.classList.toggle("menu-open");
+      menuToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
+
   // ── Drop zone ──────────────────────────────────────────────────────────────
   const dropZone = document.getElementById("drop-zone");
   const fileInput = document.getElementById("file-input");
@@ -76,6 +85,8 @@ document.addEventListener("DOMContentLoaded", () => {
       processing: "Отримуємо транскрипцію запису...",
       analyzing: "AI аналізує розмову...",
     };
+    const labelFor = (data) => (data.analysis_only && data.status === "processing")
+      ? labels.analyzing : (labels[data.status] || data.status);
     const poll = setInterval(async () => {
       let data;
       try {
@@ -96,10 +107,10 @@ document.addEventListener("DOMContentLoaded", () => {
         location.reload();
         return;
       }
-      if (statusEl) {
+      if (statusEl && !processingCard.classList.contains("alert")) {
         statusEl.textContent = data.waiting
           ? `Очікуємо транскрипцію від Zoom (перевірка о ${data.not_before.slice(11, 16)})`
-          : (labels[data.status] || data.status);
+          : labelFor(data);
       }
       if (noteEl && data.error_message) noteEl.textContent = data.error_message;
     }, 4000);
@@ -159,6 +170,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   const saveAmountBtn = document.getElementById("save-amount-btn");
+  document.getElementById("sale-amount-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); saveAmountBtn?.click(); }
+  });
   if (saveAmountBtn) {
     saveAmountBtn.addEventListener("click", async () => {
       const raw = document.getElementById("sale-amount-input").value.trim();
@@ -246,6 +260,145 @@ document.addEventListener("DOMContentLoaded", () => {
       rows.forEach((r) => tbody.appendChild(r));
     });
   });
+
+  // ── Timecodes: перемотка плеєра / прокрутка транскрипції ────────────────────
+  const toSeconds = (label) => {
+    const parts = String(label).split(":").map(Number);
+    if (parts.some(isNaN)) return null;
+    return parts.reduce((acc, value) => acc * 60 + value, 0);
+  };
+  document.addEventListener("click", (e) => {
+    const button = e.target.closest(".tc");
+    if (!button) return;
+    const seconds = toSeconds(button.dataset.t);
+    if (seconds === null) return;
+    const player = document.getElementById("media-player");
+    if (player) {
+      player.currentTime = seconds;
+      player.play().catch(() => {});
+      player.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    const lines = Array.from(document.querySelectorAll("#transcript .t-line[data-t]"));
+    let target = null;
+    for (const line of lines) {
+      if (Number(line.dataset.t) <= seconds) target = line; else break;
+    }
+    if (target) {
+      document.querySelectorAll("#transcript .t-line.highlight").forEach((l) => l.classList.remove("highlight"));
+      target.classList.add("highlight");
+      const box = document.getElementById("transcript");
+      box.scrollTop = target.offsetTop - box.offsetTop - box.clientHeight / 2;
+      if (!box.contains(button)) showBackButton(window.scrollY);
+      box.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  });
+
+  // Після переходу до транскрипції — кнопка повернення на попереднє місце сторінки
+  function showBackButton(scrollY) {
+    let back = document.getElementById("back-to-place");
+    if (!back) {
+      back = document.createElement("button");
+      back.id = "back-to-place";
+      back.type = "button";
+      back.className = "btn btn-primary btn-sm back-to-place";
+      back.textContent = "↩ Назад до аналізу";
+      document.body.appendChild(back);
+    }
+    back.onclick = () => { window.scrollTo({ top: scrollY, behavior: "smooth" }); back.remove(); };
+  }
+
+  // ── Копіювання тексту ──────────────────────────────────────────────────────
+  document.querySelectorAll(".copy-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const source = document.getElementById(btn.dataset.copyTarget);
+      if (!source) return;
+      try {
+        await navigator.clipboard.writeText(source.innerText.trim());
+        btn.textContent = "✓ Скопійовано";
+      } catch (_) {
+        btn.textContent = "Виділіть текст вручну";
+      }
+      setTimeout(() => { btn.textContent = "📋 Копіювати"; }, 2000);
+    });
+  });
+
+  // ── Автовідправка форм (зміна ролі) ────────────────────────────────────────
+  document.querySelectorAll("select.auto-submit").forEach((select) => {
+    select.addEventListener("change", () => select.form && select.form.submit());
+  });
+
+  // ── Редактор чек-листа ─────────────────────────────────────────────────────
+  const criteriaList = document.getElementById("criteria-list");
+  if (criteriaList) {
+    const template = document.getElementById("criterion-template");
+    const form = document.getElementById("checklist-form");
+    let dirty = false;
+    form.addEventListener("input", () => { dirty = true; });
+    form.addEventListener("submit", () => { dirty = false; });
+    window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+    // Enter у полі назви не повинен одразу зберігати весь чек-лист
+    form.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && e.target.tagName === "INPUT") e.preventDefault();
+    });
+    document.getElementById("add-criterion")?.addEventListener("click", () => {
+      if (criteriaList.querySelectorAll(".criterion-row").length >= 20) {
+        alert("Максимум 20 критеріїв");
+        return;
+      }
+      const row = template.content.firstElementChild.cloneNode(true);
+      criteriaList.appendChild(row);
+      dirty = true;
+      row.querySelector("input[name=criterion_title]").focus();
+    });
+    criteriaList.addEventListener("click", (e) => {
+      const row = e.target.closest(".criterion-row");
+      if (!row) return;
+      if (e.target.closest(".remove-criterion")) {
+        if (criteriaList.querySelectorAll(".criterion-row").length <= 1) {
+          alert("У чек-листі має залишитися хоча б один критерій");
+          return;
+        }
+        row.remove();
+        dirty = true;
+      } else if (e.target.closest(".move-up") && row.previousElementSibling) {
+        criteriaList.insertBefore(row, row.previousElementSibling);
+        dirty = true;
+      } else if (e.target.closest(".move-down") && row.nextElementSibling) {
+        criteriaList.insertBefore(row.nextElementSibling, row);
+        dirty = true;
+      }
+    });
+  }
+
+  // ── Масовий переаналіз: підтвердження з реальною кількістю записів ──────────
+  const reanalyzeForm = document.getElementById("reanalyze-form");
+  if (reanalyzeForm) {
+    reanalyzeForm.addEventListener("submit", async (e) => {
+      if (reanalyzeForm.dataset.confirmed) return;
+      e.preventDefault();
+      const params = new URLSearchParams(new FormData(reanalyzeForm));
+      params.delete("csrf_token");
+      let text = "Поставити записи за вибраний період у чергу на повторний аналіз?";
+      try {
+        const res = await fetch(`${reanalyzeForm.dataset.countUrl}?${params}`, { credentials: "same-origin" });
+        const data = await res.json();
+        if (data.ok && !data.count) { alert("За вибраний період немає записів з транскрипцією"); return; }
+        if (data.ok) text = `Переаналізувати ${data.count} записів${data.total > data.count ? ` (з ${data.total}; максимум ${data.limit} за раз)` : ""}? `
+             + "Кожен запис — окремий платний запит до Claude.";
+      } catch (_) { /* покажемо загальне питання */ }
+      if (confirm(text)) { reanalyzeForm.dataset.confirmed = "1"; reanalyzeForm.submit(); }
+    });
+  }
+
+  // ── Налаштування: поле власної моделі лише для «Інша модель…» ───────────────
+  const modelSelect = document.getElementById("anthropic_model");
+  const customModel = document.getElementById("anthropic_model_custom");
+  if (modelSelect && customModel) {
+    const sync = () => { customModel.style.display = modelSelect.value === "custom" ? "" : "none"; };
+    modelSelect.addEventListener("change", sync);
+    sync();
+  }
 
   // ── Score bars ─────────────────────────────────────────────────────────────
   document.querySelectorAll(".score-bar-fill").forEach((el) => {

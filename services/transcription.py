@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from services.transcript_text import format_timecode
+
 log = logging.getLogger(__name__)
 
 MAX_DIRECT_BYTES = 24 * 1024 * 1024
@@ -48,9 +50,33 @@ def _client():
     return OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=Timeout(900, connect=10), max_retries=2)
 
 
-def _whisper(client, path: Path) -> str:
+def _field(segment, name):
+    return segment.get(name) if isinstance(segment, dict) else getattr(segment, name, None)
+
+
+def segments_to_text(segments, offset: float = 0) -> str:
+    """Сегменти Whisper → абзаци «[ГГ:ХХ:СС] текст» (~30 с або ~400 символів)."""
+    lines, current, start = [], [], None
+    for segment in segments or []:
+        text = (_field(segment, "text") or "").strip()
+        seg_start = float(_field(segment, "start") or 0)
+        if not text:
+            continue
+        if start is None:
+            start = seg_start
+        current.append(text)
+        if seg_start - start >= 30 or sum(len(t) for t in current) >= 400:
+            lines.append(f"[{format_timecode(offset + start)}] {' '.join(current)}")
+            current, start = [], None
+    if current:
+        lines.append(f"[{format_timecode(offset + (start or 0))}] {' '.join(current)}")
+    return "\n".join(lines)
+
+
+def _whisper(client, path: Path, offset: float = 0) -> str:
     import openai
-    kwargs = {"model": MODEL, "response_format": "json"}
+    with_segments = MODEL.startswith("whisper")  # gpt-4o-transcribe не підтримує verbose_json
+    kwargs = {"model": MODEL, "response_format": "verbose_json" if with_segments else "json"}
     if LANGUAGE:
         kwargs["language"] = LANGUAGE
     try:
@@ -73,6 +99,9 @@ def _whisper(client, path: Path) -> str:
         raise TranscriptionError(f"OpenAI відхилив файл ({e.status_code}): {e.message}", bad_input=True) from e
     except openai.APIStatusError as e:
         raise TranscriptionError(f"OpenAI відхилив файл ({e.status_code}): {e.message}") from e
+    segments = _field(resp, "segments") if with_segments else None
+    if segments:
+        return segments_to_text(segments, offset)
     return (getattr(resp, "text", "") or "").strip()
 
 
@@ -86,8 +115,8 @@ def _run_ffmpeg(args: list[str]) -> None:
         raise TranscriptionError("ffmpeg не встиг обробити файл (понад 1 год)") from e
 
 
-def split_audio(ff: str, source: Path, workdir: Path) -> list[Path]:
-    """Один прохід ffmpeg: витягує звук, стискає і ріже на сегменти."""
+def split_audio(ff: str, source: Path, workdir: Path) -> tuple[list[Path], int]:
+    """Один прохід ffmpeg: витягує звук, стискає і ріже на сегменти. Повертає (файли, довжина сегмента)."""
     base = [ff, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
             "-vn", "-ac", "1", "-ar", "16000"]
     attempts = (
@@ -106,7 +135,7 @@ def split_audio(ff: str, source: Path, workdir: Path) -> list[Path]:
             continue
         parts = sorted(p for p in workdir.glob(f"part_*.{ext}") if p.stat().st_size > 1024)
         if parts:
-            return parts
+            return parts, seconds
     raise last_error or TranscriptionError("У файлі не знайдено аудіодоріжки")
 
 
@@ -138,10 +167,10 @@ def transcribe(file_path: str | Path) -> str:
             f"Файл {size / 1024 / 1024:.0f} МБ ({ext}) потребує ffmpeg для стиснення, але ffmpeg не встановлено."
         )
     with tempfile.TemporaryDirectory(prefix="maysternia-audio-") as tmp:
-        parts = split_audio(ff, path, Path(tmp))
+        parts, seconds = split_audio(ff, path, Path(tmp))
         log.info("Транскрипція: %d сегмент(ів)", len(parts))
-        texts = [_whisper(client, part) for part in parts]
-    text = " ".join(t for t in texts if t).strip()
+        texts = [_whisper(client, part, offset=i * seconds) for i, part in enumerate(parts)]
+    text = "\n".join(t for t in texts if t).strip()
     if not text:
         raise TranscriptionError("Whisper повернув порожню транскрипцію (у записі немає мовлення?)")
     return text

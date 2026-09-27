@@ -18,6 +18,7 @@
   </div>
   {% endif %}
 
+  <datalist id="people-list">{% for p in people or [] %}<option value="{{ p }}">{% endfor %}</datalist>
   <form method="post" enctype="multipart/form-data" id="upload-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
@@ -44,13 +45,13 @@
     <div class="form-group">
       <label class="form-label" for="person_name">Імʼя тренера / менеджера</label>
       <input class="form-control" type="text" id="person_name" name="person_name" maxlength="120"
-             placeholder="Наприклад: Олена Ковальчук" required value="{{ form.get('person_name', '') }}">
+             placeholder="Наприклад: Олена Ковальчук" required list="people-list" value="{{ form.get('person_name', '') }}">
     </div>
 
     <div class="form-group" id="trainer-name-group" style="display:none">
       <label class="form-label" for="trainer_name">Імʼя тренера (для продажу)</label>
       <input class="form-control" type="text" id="trainer_name" name="trainer_name" maxlength="120"
-             placeholder="Тренер, який проводив пробне заняття" value="{{ form.get('trainer_name', '') }}">
+             placeholder="Тренер, який проводив пробне заняття" list="people-list" value="{{ form.get('trainer_name', '') }}">
     </div>
 
     <div class="two-columns" style="margin-bottom:0">
@@ -73,7 +74,7 @@
           Перетягніть файл сюди або <strong>клікніть для вибору</strong>
         </div>
         <div class="drop-zone-text" style="margin-top:6px;font-size:12px">
-          Транскрипція: vtt, txt · Аудіо/відео: mp3, m4a, mp4, wav, webm, mov · Макс. 500 МБ
+          Транскрипція: vtt, txt · Аудіо/відео: mp3, m4a, mp4, wav, webm, mov, ogg, flac · Макс. 500 МБ
         </div>
         <div class="drop-zone-file-name" id="file-name" style="display:none"></div>
       </div>

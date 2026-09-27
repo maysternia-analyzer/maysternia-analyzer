@@ -240,7 +240,7 @@ def test_process_uploaded_vtt_file(fake_ai, monkeypatch, tmp_path):
     (tmp_path / "abc.vtt").write_text("WEBVTT\n\n00:01.000 --> 00:02.000\nОлена: Привіт\n", encoding="utf-8")
     rid = db.create_record("2026-09-01", "sales", "Олена", "abc.vtt", source="upload")
     assert _process_next() == "done"
-    assert db.get_record(rid)["transcription"] == "Олена: Привіт"
+    assert db.get_record(rid)["transcription"] == "[00:00:01] Олена: Привіт"
 
 
 def test_legacy_error_suffix_is_stripped_on_reanalyze(fake_ai):

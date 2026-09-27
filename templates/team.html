@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% from "_macros.html" import score_color, rate_bar %}
+{% block title %}Команда — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>👥 Команда</h1>
+  <a class="btn btn-outline btn-sm" href="{{ url_for('export_csv', type=filters.type, date_from=filters.date_from, date_to=filters.date_to) }}">⬇️ Експорт в Excel</a>
+</div>
+
+<form method="get" action="{{ url_for('team_page') }}">
+  <div class="filters">
+    <div class="filter-group">
+      <label class="filter-label">Від</label>
+      <input type="date" name="date_from" value="{{ filters.date_from }}">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">До</label>
+      <input type="date" name="date_to" value="{{ filters.date_to }}">
+    </div>
+    <div class="filter-group">
+      <label class="filter-label">Тип</label>
+      <select name="type">
+        <option value="">Заняття і продажі</option>
+        <option value="lesson" {{ 'selected' if filters.type == 'lesson' }}>Лише заняття</option>
+        <option value="sales" {{ 'selected' if filters.type == 'sales' }}>Лише продажі</option>
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm" style="align-self:flex-end">Показати</button>
+    <a href="{{ url_for('team_page', period='all', type=filters.type) }}" class="btn btn-ghost btn-sm" style="align-self:flex-end">За весь час</a>
+  </div>
+</form>
+<p style="font-size:13px;color:var(--text-muted);margin:-12px 0 20px">
+  {% if filters.all %}Період: весь час{% else %}Період: {{ filters.date_from or '…' }} — {{ filters.date_to or '…' }}{% if has_previous %}; тренд — порівняно з попереднім таким самим періодом{% endif %}{% endif %}
+</p>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Записів</div>
+    <div class="stat-value">{{ stats.total }}</div>
+    <div class="stat-sub">{{ stats.lessons_total }} {{ stats.lessons_total|plural('заняття', 'заняття', 'занять') }} · {{ stats.sales_total }} {{ stats.sales_total|plural('продаж', 'продажі', 'продажів') }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Проаналізовано</div>
+    <div class="stat-value">{{ stats.analyzed }}</div>
+    <div class="stat-sub">{{ stats.errors }} помилок</div>
+  </div>
+  {% if stats.avg_sales_score is defined %}
+  <div class="stat-card">
+    <div class="stat-label">Середній чек-ліст продажів</div>
+    <div class="stat-value" style="color:{{ score_color(stats.avg_sales_score) }}">{{ stats.avg_sales_score }}%</div>
+    <div class="stat-sub">високий шанс угоди (AI): {{ stats.ai_high_share }}%{% if stats.conversion_real is defined %} · реальна конверсія {{ stats.conversion_real }}%{% endif %}</div>
+  </div>
+  {% endif %}
+  {% if stats.avg_lesson_score is defined %}
+  <div class="stat-card">
+    <div class="stat-label">Середня оцінка занять</div>
+    <div class="stat-value" style="color:{{ score_color(stats.avg_lesson_score) }}">{{ stats.avg_lesson_score }}%</div>
+    <div class="stat-sub">по всіх тренерах</div>
+  </div>
+  {% endif %}
+  {% if stats.revenue > 0 %}
+  <div class="stat-card">
+    <div class="stat-label">Закриті угоди</div>
+    <div class="stat-value" style="font-size:22px;color:var(--green)">{{ stats.revenue|money }} ₴</div>
+    <div class="stat-sub">{{ stats.sold }} {{ stats.sold|plural('продаж', 'продажі', 'продажів') }}</div>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card" style="padding:0;overflow:hidden;margin-bottom:24px">
+  <div class="section-title" style="padding:16px 20px 0">Рейтинг</div>
+  <div class="table-wrap">
+    {% if rating %}
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="0">Імʼя</th>
+          <th data-sort="1">Записів</th>
+          <th data-sort="2" title="Середній чек-ліст продажів">Продажі</th>
+          <th data-sort="3" title="Середня оцінка занять">Заняття</th>
+          <th data-sort="4" title="Зміна середньої оцінки проти попереднього періоду">Тренд</th>
+          <th data-sort="5">Шанс угоди</th>
+          <th data-sort="6">Конверсія</th>
+          <th data-sort="7">Сума угод</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in rating %}
+        <tr class="clickable" data-href="{{ url_for('person_page', name=p.name) }}">
+          <td style="font-weight:500"><a class="row-link" href="{{ url_for('person_page', name=p.name) }}">{{ p.name }}</a><div style="font-size:12px;color:var(--text-muted)">{% if p.lessons_count %}{{ p.lessons_count }} зан.{% endif %}{% if p.lessons_count and p.sales_count %} · {% endif %}{% if p.sales_count %}{{ p.sales_count }} прод.{% endif %}</div></td>
+          <td data-val="{{ p.calls }}">{{ p.calls }}</td>
+          <td data-val="{{ p.avg_sales_score if p.avg_sales_score is not none else -1 }}">{% if p.avg_sales_score is not none %}{{ rate_bar(p.avg_sales_score) }}{% else %}—{% endif %}</td>
+          <td data-val="{{ p.avg_lesson_score if p.avg_lesson_score is not none else -1 }}">{% if p.avg_lesson_score is not none %}{{ rate_bar(p.avg_lesson_score) }}{% else %}—{% endif %}</td>
+          <td data-val="{{ p.trend if p.trend is not none else 0 }}">
+            {% if p.trend is none %}<span style="color:var(--text-muted)">—</span>
+            {% elif p.trend > 0 %}<span style="color:var(--green)">▲ +{{ p.trend }}</span>
+            {% elif p.trend < 0 %}<span style="color:var(--red)">▼ {{ p.trend }}</span>
+            {% else %}<span style="color:var(--text-muted)">= 0</span>{% endif %}
+          </td>
+          <td data-val="{{ p.avg_deal_pct if p.avg_deal_pct is not none else -1 }}">{{ (p.avg_deal_pct ~ '%') if p.avg_deal_pct is not none else '—' }}</td>
+          <td data-val="{{ p.conversion if p.conversion is not none else -1 }}">{% if p.conversion is not none %}{{ p.conversion }}% <span style="font-size:12px;color:var(--text-muted)">({{ p.sold }}/{{ p.with_result }})</span>{% else %}—{% endif %}</td>
+          <td data-val="{{ p.revenue }}">{{ (p.revenue|money ~ ' ₴') if p.revenue else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="padding:40px;text-align:center;color:var(--text-muted)">За цей період немає проаналізованих записів.</div>
+    {% endif %}
+  </div>
+</div>
+
+{% if sales_criteria or lesson_criteria %}
+<div class="two-columns">
+  {% for title, rates in (('Продажі: виконання чек-листа', sales_criteria), ('Заняття: виконання чек-листа', lesson_criteria)) %}
+  {% if rates %}
+  <div class="card">
+    <div class="section-title">{{ title }}</div>
+    <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Слабкі місця команди — зверху</p>
+    {% set kind = 'sales' if loop.index == 1 else 'lesson' %}
+    {% for c in rates %}
+    <div style="margin-bottom:10px">
+      <div style="font-size:13px;margin-bottom:4px">
+        {% if c.passed < c.total %}<a href="{{ url_for('team_drill', kind=kind, criterion=c.key, date_from=filters.date_from, date_to=filters.date_to, period='all' if filters.all else None) }}" title="Показати дзвінки, де не виконано">{{ c.title }}</a>{% else %}{{ c.title }}{% endif %}
+        <span style="color:var(--text-muted)">({{ c.passed }}/{{ c.total }})</span>
+      </div>
+      {{ rate_bar(c.rate) }}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if objections or risks %}
+<div class="two-columns">
+  {% if objections %}
+  <div class="card">
+    <div class="section-title">🚧 Заперечення клієнтів</div>
+    <table class="kv-table" style="width:100%">
+      {% for o in objections %}
+      <tr>
+        <td><a href="{{ url_for('team_drill', kind='sales', objection=o.category, date_from=filters.date_from, date_to=filters.date_to, period='all' if filters.all else None) }}"><strong>{{ o.category }}</strong></a> ×{{ o.count }}<div style="font-size:12px;color:var(--text-muted)">«{{ o.example[:120] }}»</div></td>
+        <td style="width:40%">відпрацьовано {{ rate_bar(o.handled_rate) }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+  {% if risks %}
+  <div class="card">
+    <div class="section-title">⚠️ Ризики угод</div>
+    {% for r in risks %}
+    <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:14px">
+      <a href="{{ url_for('team_drill', kind='sales', risk=r.category, date_from=filters.date_from, date_to=filters.date_to, period='all' if filters.all else None) }}">{{ r.category }}</a><span class="badge badge-red">{{ r.count }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if calibration %}
+<div class="card" style="margin-top:20px">
+  <div class="section-title">🎯 Точність прогнозу AI</div>
+  <p class="hint" style="margin-bottom:10px">Скільки угод реально закрито серед записів з відміченим результатом — за прогнозом AI «шанс угоди».</p>
+  <table class="kv-table" style="width:100%">
+    {% for c in calibration %}
+    <tr><td>Прогноз «{{ c.level }}»</td><td>продано {{ c.sold }} з {{ c.total }} — <strong>{{ c.rate }}%</strong></td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endblock %}

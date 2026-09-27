@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="{{ url_for('team_page', period='all') if filters.all else url_for('team_page', date_from=filters.date_from, date_to=filters.date_to) }}" style="color:var(--text-muted);font-size:13px">← Команда</a>
+  <h1>🔎 {{ title }}</h1>
+</div>
+<p style="font-size:13px;color:var(--text-muted);margin:-12px 0 20px">
+  {{ 'Продажі' if filters.kind == 'sales' else 'Заняття' }} · {% if filters.all %}весь час{% else %}{{ filters.date_from or '…' }} — {{ filters.date_to or '…' }}{% endif %} ·
+  знайдено {{ items|length }} {{ items|length|plural('випадок', 'випадки', 'випадків') }}
+</p>
+
+{% for item in items %}
+{% set r = item.record %}
+<a class="card search-hit" href="{{ url_for('record_detail', record_id=r.id) }}">
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+    <strong>{{ r.person_name }}</strong>
+    <span style="color:var(--text-muted);font-size:13px">{{ r.record_date }} {{ r.record_time }}</span>
+    {% if item.handled is defined %}<span>{{ '✅ відпрацьовано' if item.handled else '❌ не відпрацьовано' }}</span>{% endif %}
+    {% if item.time %}<span class="tc">{{ item.time }}</span>{% endif %}
+  </div>
+  {% if item.quote %}<div class="quote">«{{ item.quote }}»</div>{% endif %}
+  {% if item.text %}<div class="check-comment" style="margin-top:6px">{{ item.text }}</div>{% endif %}
+</a>
+{% else %}
+<p style="color:var(--text-muted)">За цей період таких випадків немає.</p>
+{% endfor %}
+{% endblock %}

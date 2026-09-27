@@ -6,6 +6,10 @@
   <h1>👥 Управління користувачами</h1>
 </div>
 
+<datalist id="people-list">
+  {% for p in people %}<option value="{{ p }}">{% endfor %}
+</datalist>
+
 <div class="card" style="margin-bottom:24px">
   <div class="section-title">Додати користувача</div>
   <form method="POST" action="{{ url_for('admin_create_user') }}">
@@ -26,18 +30,38 @@
       </div>
       <div class="filter-group">
         <label class="filter-label">Роль</label>
-        <select name="role" class="form-control">
-          <option value="viewer">Переглядач</option>
+        <select name="role" class="form-control" id="new-user-role">
+          <option value="viewer">Керівник</option>
+          <option value="manager">Менеджер / тренер</option>
           <option value="admin">Адміністратор</option>
         </select>
+      </div>
+      <div class="filter-group">
+        <label class="filter-label">Імʼя в записах</label>
+        <input type="text" name="person_name" class="form-control" list="people-list" maxlength="120" placeholder="для менеджера">
       </div>
       <button type="submit" class="btn btn-primary">+ Додати</button>
     </div>
   </form>
   <p style="margin-top:12px;font-size:12px;color:var(--text-muted)">
-    Переглядач бачить усі записи, може завантажувати нові, коментувати й перезапускати аналіз.
-    Видаляти записи та керувати користувачами може лише адміністратор.
+    <strong>Керівник</strong> бачить усі записи, завантажує нові, коментує, відмічає продажі й перезапускає аналіз.
+    <strong>Менеджер / тренер</strong> бачить лише власні записи (за «Імʼям в записах»), свій профіль і рекомендації — без права змін.
+    <strong>Адміністратор</strong> додатково керує користувачами, чек-листами, налаштуваннями і видаляє записи.
   </p>
+</div>
+
+<div class="card" style="margin-bottom:24px">
+  <div class="section-title">🔀 Обʼєднати / перейменувати людину</div>
+  <form method="POST" action="{{ url_for('admin_rename_person') }}" class="confirm-form"
+        data-confirm="Замінити імʼя в усіх записах і привʼязках користувачів?" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="filter-group"><label class="filter-label">Поточне імʼя</label>
+      <input type="text" name="old_name" class="form-control" list="people-list" required placeholder="Myroslava"></div>
+    <div class="filter-group"><label class="filter-label">Нове імʼя</label>
+      <input type="text" name="new_name" class="form-control" list="people-list" required maxlength="120" placeholder="Мирослава"></div>
+    <button type="submit" class="btn btn-outline btn-sm">Замінити в усіх записах</button>
+  </form>
+  <p class="hint">Допомагає, коли одна людина записана по-різному (з Zoom латиницею, вручну кирилицею): статистика обʼєднається.</p>
 </div>
 
 <div class="card" style="padding:0;overflow:hidden">
@@ -48,8 +72,8 @@
           <th>Імʼя</th>
           <th>Email</th>
           <th>Роль</th>
+          <th>Імʼя в записах</th>
           <th>Статус</th>
-          <th>Створено</th>
           <th>Дії</th>
         </tr>
       </thead>
@@ -59,17 +83,34 @@
           <td style="font-weight:500">
             {{ u.name }}
             {% if u.id == current_user.id %}<span style="font-size:11px;color:var(--accent);margin-left:6px">(ви)</span>{% endif %}
+            <div style="font-size:12px;color:var(--text-muted)">з {{ (u.created_at or '')[:10] }}</div>
           </td>
           <td style="color:var(--text-muted)">{{ u.email }}</td>
           <td>
-            {% if u.role == 'admin' %}<span class="badge badge-yellow">Адмін</span>
-            {% else %}<span class="badge badge-gray">Переглядач</span>{% endif %}
+            {% if u.id != current_user.id %}
+            <form method="POST" action="{{ url_for('admin_change_role', user_id=u.id) }}" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <select name="role" class="form-control auto-submit" style="width:auto">
+                {% for r in roles %}<option value="{{ r }}" {{ 'selected' if u.role == r }}>{{ ROLE_LABELS.get(r, r) }}</option>{% endfor %}
+              </select>
+            </form>
+            {% else %}
+            <span class="badge badge-yellow">{{ ROLE_LABELS.get(u.role, u.role) }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <form method="POST" action="{{ url_for('admin_change_person', user_id=u.id) }}" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="text" name="person_name" class="form-control" list="people-list" maxlength="120"
+                     value="{{ u.person_name or '' }}" placeholder="—" style="width:170px">
+              <button type="submit" class="btn btn-ghost btn-sm" title="Зберегти">💾</button>
+            </form>
+            {% if u.role == 'manager' and not u.person_name %}<div style="font-size:12px;color:var(--red)">не привʼязано — записів не побачить</div>{% endif %}
           </td>
           <td>
             {% if u.is_active %}<span class="badge badge-green">Активний</span>
             {% else %}<span class="badge badge-red">Заблокований</span>{% endif %}
           </td>
-          <td style="color:var(--text-muted);font-size:13px">{{ (u.created_at or '')[:10] }}</td>
           <td>
             {% if u.id != current_user.id %}
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -77,13 +118,6 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-sm btn-outline" title="{{ 'Заблокувати' if u.is_active else 'Активувати' }}">
                   {{ '🔒' if u.is_active else '🔓' }}
-                </button>
-              </form>
-              <form method="POST" action="{{ url_for('admin_change_role', user_id=u.id) }}">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <input type="hidden" name="role" value="{{ 'viewer' if u.role == 'admin' else 'admin' }}">
-                <button type="submit" class="btn btn-sm btn-outline" title="{{ 'Зробити переглядачем' if u.role == 'admin' else 'Зробити адміністратором' }}">
-                  {{ '👁' if u.role == 'admin' else '👑' }}
                 </button>
               </form>
               <button type="button" class="btn btn-sm btn-outline pw-toggle" data-user-id="{{ u.id }}" title="Змінити пароль">🔑</button>

@@ -4,7 +4,7 @@ AI-аналіз усієї бази продажів та занять: порт
 """
 import json
 
-from services.analysis import to_score
+from services.analysis import main_score, present_criteria, to_score
 from services.llm import call_json
 
 MAX_SALES = 120
@@ -104,9 +104,11 @@ def compute_metrics(sales: list[dict], lessons: list[dict]) -> dict:
 
 def _sale_summary(r: dict) -> dict:
     a = _dict(r["analysis"])
-    need = _dict(a.get("need_identified"))
+    criteria = present_criteria(a, "sales")
     mistakes = a.get("top_mistakes") if isinstance(a.get("top_mistakes"), list) else []
-    return {
+    client = _dict(a.get("client"))
+    objections = [o for o in a.get("objections") or [] if isinstance(o, dict)]
+    summary = {
         "date": r.get("record_date", ""),
         "manager": r.get("person_name", ""),
         "trainer": r.get("trainer_name", ""),
@@ -115,13 +117,21 @@ def _sale_summary(r: dict) -> dict:
         "lead_temperature": a.get("lead_temperature"),
         "sale_made": {1: True, 0: False}.get(r.get("sale_made")),
         "sale_amount": r.get("sale_amount"),
-        **{k: _dict(a.get(k)).get("result") for k in (
-            "need_identified", "presentation_done", "objections_handled", "urgency_used", "next_step_offered")},
-        "client_needs": _clip(need.get("details") or need.get("comment")),
-        "objections": _clip(_dict(a.get("objections_handled")).get("comment")),
+        "checklist": {c["title"]: c["result"] for c in criteria},
+        "summary": _clip(a.get("summary")),
+        "client_goal": _clip(client.get("goal")),
+        "client_pains": [_clip(p, 150) for p in (client.get("pains") or [])[:3]],
+        "objections": [{"category": o.get("category"), "text": _clip(o.get("text"), 150),
+                        "handled": o.get("handled")} for o in objections[:4]],
         "top_mistakes": [_clip(m, 200) for m in mistakes[:3]],
-        "transcript_preview": _clip(r.get("transcription"), SALES_PREVIEW_CHARS),
     }
+    if not objections:  # старі записи: потреби й заперечення — лише в коментарях критеріїв
+        comments = {c["key"]: c["comment"] for c in criteria}
+        summary["objections_comment"] = _clip(comments.get("objections_handled"))
+        summary["client_needs"] = _clip(comments.get("need_identified"))
+    if not a.get("summary"):
+        summary["transcript_preview"] = _clip(r.get("transcription"), SALES_PREVIEW_CHARS)
+    return summary
 
 
 def _lesson_summary(r: dict) -> dict:
@@ -129,7 +139,9 @@ def _lesson_summary(r: dict) -> dict:
     return {
         "date": r.get("record_date", ""),
         "trainer": r.get("person_name", ""),
-        "overall_score": a.get("overall_score"),
+        "overall_score": main_score(a, "lesson"),
+        "checklist": {c["title"]: c["result"] for c in present_criteria(a, "lesson")},
+        "summary": _clip(a.get("summary")),
         "engagement_level": a.get("engagement_level"),
         "strengths": _clip(a.get("strengths")),
         "improvements": _clip(a.get("improvements")),
@@ -165,7 +177,7 @@ def generate_insights(records: list) -> dict:
         note = (f"\nУ вибірці наведено {n_sales} найсвіжіших продажів із {len(sales)} "
                 f"та {n_lessons} занять із {len(lessons)}; метрики пораховано по всіх.")
     user = f"Дані для аналізу (JSON):{note}\n<data>\n{payload}\n</data>"
-    data = call_json(SYSTEM, user, INSIGHTS_SCHEMA, max_tokens=16000)
+    data = call_json(SYSTEM, user, INSIGHTS_SCHEMA, max_tokens=32000)
 
     # Точні цифри — з бази, а не від моделі.
     for key in ("sales_patterns", "lesson_insights"):

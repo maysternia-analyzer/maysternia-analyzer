@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% from "_macros.html" import score_color, score_cell, status_badge, level_badge, check_mark %}
+{% from "_macros.html" import score_color, score_cell, status_badge, level_badge, checklist_cell, pagination, date_cell, empty_state %}
 {% block title %}Заняття — Майстерня Аналізатор{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <h1>🎓 Пробні заняття</h1>
+  <a class="btn btn-outline btn-sm" href="{{ url_for('export_csv', type='lesson', person=filters.person, date_from=filters.date_from, date_to=filters.date_to) }}">⬇️ Експорт</a>
 </div>
 
 <div class="stats-grid">
@@ -41,7 +42,7 @@
   <div style="display:flex;flex-wrap:wrap;gap:16px">
     {% for person, score in stats.by_trainer %}
     <div style="min-width:160px">
-      <div style="font-size:13px;margin-bottom:6px;font-weight:500">{{ person }}</div>
+      <div style="font-size:13px;margin-bottom:6px;font-weight:500"><a href="{{ url_for('person_page', name=person) }}">{{ person }}</a></div>
       <div class="score-bar">
         <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ score }}"></div></div>
         <span class="score-bar-num" style="color:{{ score_color(score) }}">{{ score }}%</span>
@@ -54,6 +55,7 @@
 
 <form method="get" action="{{ url_for('lessons_page') }}">
   <div class="filters">
+    {% if trainers %}
     <div class="filter-group">
       <label class="filter-label">Тренер</label>
       <select name="person" onchange="this.form.submit()">
@@ -63,6 +65,7 @@
         {% endfor %}
       </select>
     </div>
+    {% endif %}
     <div class="filter-group">
       <label class="filter-label">Від</label>
       <input type="date" name="date_from" value="{{ filters.date_from }}" onchange="this.form.submit()">
@@ -87,38 +90,28 @@
           <th data-sort="1">Тренер</th>
           <th data-sort="2">Оцінка</th>
           <th>Залученість</th>
-          <th>Привітання</th>
-          <th>Структура</th>
-          <th>Вправи</th>
-          <th>Перехід</th>
+          <th data-sort="4">Чек-ліст</th>
+          <th>Резюме</th>
           <th>Статус</th>
         </tr>
       </thead>
       <tbody>
         {% for r in records %}
-        {% set a = r.analysis or {} %}
         <tr class="clickable" data-href="{{ url_for('record_detail', record_id=r.id) }}">
-          <td style="white-space:nowrap" data-val="{{ r.record_date }} {{ r.record_time }}">
-            <div>{{ r.record_date }}</div>
-            {% if r.record_time %}<div style="font-size:12px;color:var(--text-muted)">{{ r.record_time }}</div>{% endif %}
-          </td>
+          {{ date_cell(r) }}
           <td style="font-weight:500">{{ r.person_name }}</td>
-          {{ score_cell(a.overall_score if a.overall_score is defined else none) }}
-          <td>{{ level_badge(a.engagement_level) }}</td>
-          <td>{{ check_mark(a.greeting) }}</td>
-          <td>{{ check_mark(a.structure_explained) }}</td>
-          <td>{{ check_mark(a.practical_exercises) }}</td>
-          <td>{{ check_mark(a.transition_to_manager) }}</td>
+          {{ score_cell(r.score if r.has_analysis else none) }}
+          <td>{{ level_badge(r.engagement_level if r.has_analysis else '') }}</td>
+          {{ checklist_cell(r) }}
+          <td class="summary-cell">{% if r.has_analysis %}{{ (r.summary or '')[:120] }}{% if (r.summary or '')|length > 120 %}…{% endif %}{% endif %}</td>
           <td>{{ status_badge(r) }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    {{ pagination(pager) }}
     {% else %}
-    <div style="padding:60px;text-align:center;color:var(--text-muted)">
-      <div style="font-size:48px;margin-bottom:16px">🎓</div>
-      <p>Занять ще немає. <a href="{{ url_for('upload') }}">Завантажте запис →</a></p>
-    </div>
+    {{ empty_state('🎓', filters.person or filters.date_from or filters.date_to, 'Занять ще немає.', current_user.is_staff()) }}
     {% endif %}
   </div>
 </div>

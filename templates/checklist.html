@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Чек-листи — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>✅ Чек-листи оцінки</h1>
+</div>
+
+<div class="tabs">
+  {% for k in kinds %}
+  <a class="tab {{ 'active' if k == kind }}" href="{{ url_for('admin_checklist', kind=k) }}">{{ '🎓 Пробне заняття' if k == 'lesson' else '💰 Продаж' }}</a>
+  {% endfor %}
+</div>
+
+<form method="POST" action="{{ url_for('admin_checklist', kind=kind) }}" id="checklist-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-title">Критерії</div>
+    <p class="hint" style="margin-bottom:12px">
+      AI перевіряє кожен критерій і наводить цитату з розмови. Опис — що саме вважати виконанням.
+      Вага (1–10) впливає на відсоток чек-листа. Зміни діють для нових аналізів; старі записи зберігають свій чек-лист.
+    </p>
+    <div id="criteria-list">
+      {% for c in checklist.criteria %}
+      <div class="criterion-row">
+        <input type="hidden" name="criterion_key" value="{{ c.key }}">
+        <div class="criterion-main">
+          <input class="form-control" type="text" name="criterion_title" value="{{ c.title }}" maxlength="120" placeholder="Назва критерію" required>
+          <textarea class="form-control" name="criterion_description" rows="2" maxlength="600" placeholder="Що саме перевіряти">{{ c.description }}</textarea>
+        </div>
+        <div class="criterion-side">
+          <label class="filter-label">Вага</label>
+          <input class="form-control" type="number" name="criterion_weight" min="1" max="10" value="{{ c.weight }}" style="width:80px">
+          <div style="display:flex;gap:4px;margin-top:6px">
+            <button type="button" class="btn btn-ghost btn-sm move-up" title="Вище">↑</button>
+            <button type="button" class="btn btn-ghost btn-sm move-down" title="Нижче">↓</button>
+            <button type="button" class="btn btn-ghost btn-sm remove-criterion" title="Видалити">✕</button>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn btn-outline btn-sm" id="add-criterion">+ Додати критерій</button>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div class="section-title">Додаткові інструкції для AI</div>
+    <textarea class="form-control" name="instructions" rows="4" maxlength="3000" placeholder="Напр.: «Скрипт продажу: привітання → діагностика → презентація → ціна → закриття. Ціну озвучувати лише після презентації.»">{{ checklist.instructions }}</textarea>
+  </div>
+
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <button type="submit" class="btn btn-primary">💾 Зберегти чек-лист</button>
+  </div>
+</form>
+
+<template id="criterion-template">
+  <div class="criterion-row">
+    <input type="hidden" name="criterion_key" value="">
+    <div class="criterion-main">
+      <input class="form-control" type="text" name="criterion_title" maxlength="120" placeholder="Назва критерію" required>
+      <textarea class="form-control" name="criterion_description" rows="2" maxlength="600" placeholder="Що саме перевіряти"></textarea>
+    </div>
+    <div class="criterion-side">
+      <label class="filter-label">Вага</label>
+      <input class="form-control" type="number" name="criterion_weight" min="1" max="10" value="1" style="width:80px">
+      <div style="display:flex;gap:4px;margin-top:6px">
+        <button type="button" class="btn btn-ghost btn-sm move-up" title="Вище">↑</button>
+        <button type="button" class="btn btn-ghost btn-sm move-down" title="Нижче">↓</button>
+        <button type="button" class="btn btn-ghost btn-sm remove-criterion" title="Видалити">✕</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<div class="two-columns" style="margin-top:24px">
+  <div class="card">
+    <div class="section-title">🔄 Переаналізувати записи за новим чек-листом</div>
+    <p class="hint" style="margin-bottom:10px">Записи з готовою транскрипцією буде проаналізовано повторно (витрачає ліміт Claude). Сповіщення не надсилаються. За останні 30 днів таких записів: <strong>{{ candidates }}</strong>.</p>
+    <form method="POST" action="{{ url_for('admin_checklist_reanalyze', kind=kind) }}" id="reanalyze-form"
+          data-count-url="{{ url_for('admin_checklist_count', kind=kind) }}" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="filter-group"><label class="filter-label">Від</label><input type="date" name="date_from" value="{{ default_from }}"></div>
+      <div class="filter-group"><label class="filter-label">До</label><input type="date" name="date_to" value="{{ default_to }}"></div>
+      <button type="submit" class="btn btn-outline btn-sm">Переаналізувати</button>
+    </form>
+  </div>
+  <div class="card">
+    <div class="section-title">↩️ Стандартний чек-лист</div>
+    <p class="hint" style="margin-bottom:10px">Повернути критерії, з якими система працювала спочатку.</p>
+    <form method="POST" action="{{ url_for('admin_checklist_reset', kind=kind) }}" class="confirm-form" data-confirm="Замінити поточний чек-лист стандартним?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-ghost btn-sm">Відновити стандартний</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

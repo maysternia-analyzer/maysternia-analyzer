@@ -25,7 +25,6 @@ TOKEN_URL = "https://zoom.us/oauth/token"
 UPLOAD_FOLDER = Path(__file__).resolve().parent.parent / "uploads"
 
 ZOOM_USER = os.environ.get("ZOOM_USER_ID", "me")
-MIN_DURATION_MINUTES = int(os.environ.get("ZOOM_MIN_DURATION_MINUTES", "3"))
 MAX_MEDIA_BYTES = 3 * 1024 ** 3
 _HTTP_TIMEOUT = (15, 120)  # (connect, read)
 
@@ -253,7 +252,8 @@ def select_best_file(files: list[dict]) -> tuple[dict | None, str | None]:
 
 def is_too_short(info: dict) -> bool:
     """Випадкові записи на 0–2 хвилини (у Zoom їх багато) не аналізуємо."""
-    return info.get("duration", 0) < MIN_DURATION_MINUTES
+    from services import settings
+    return info.get("duration", 0) < settings.get("zoom_min_duration_minutes")
 
 
 def file_local_name(file: dict) -> str:
