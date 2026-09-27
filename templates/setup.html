@@ -15,7 +15,14 @@
   </div>
   <div class="card">
     {% if error %}<div class="alert alert-error" style="margin-bottom:16px">{{ error }}</div>{% endif %}
+    {% if not setup_allowed %}
+    <div class="alert alert-error" style="margin-bottom:16px">
+      Щоб створити адміністратора через цю форму, задайте унікальний <code>SECRET_KEY</code> (від 16 символів)
+      у змінних середовища, або виконайте на сервері <code>python create_admin.py</code>.
+    </div>
+    {% endif %}
     <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="form-group">
         <label class="form-label">Email</label>
         <input class="form-control" type="email" name="email" placeholder="admin@example.com" required>
@@ -26,7 +33,7 @@
       </div>
       <div class="form-group">
         <label class="form-label">Пароль</label>
-        <input class="form-control" type="password" name="password" required>
+        <input class="form-control" type="password" name="password" minlength="8" autocomplete="new-password" required>
       </div>
       <div class="form-group">
         <label class="form-label">Секретний ключ (SECRET_KEY з .env)</label>

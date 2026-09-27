@@ -1,0 +1,33 @@
+{% macro score_color(s) -%}
+{%- if s is none -%}var(--text-muted){%- elif s >= 75 -%}var(--green){%- elif s >= 50 -%}var(--yellow){%- else -%}var(--red){%- endif -%}
+{%- endmacro %}
+
+{% macro score_cell(s) -%}
+{% if s is not none %}
+<td data-val="{{ s }}">
+  <div class="score-bar">
+    <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ s }}"></div></div>
+    <span class="score-bar-num" style="color:{{ score_color(s) }}">{{ s }}%</span>
+  </div>
+</td>
+{% else %}<td data-val="-1">—</td>{% endif %}
+{%- endmacro %}
+
+{% macro status_badge(r) -%}
+{% if r.status == 'done' %}<span class="badge badge-green">Готово</span>
+{% elif r.status == 'queued' %}<span class="badge badge-gray" title="{{ r.error_message or '' }}">В черзі</span>
+{% elif r.status in ('processing', 'analyzing') %}<span class="badge badge-yellow">Обробка</span>
+{% elif r.status == 'error' %}<span class="badge badge-red" title="{{ (r.error_message or '')[:300] }}">Помилка</span>
+{% else %}<span class="badge badge-gray">{{ r.status }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro level_badge(value, icons=false) -%}
+{% if value == 'Високий' or value == 'Гарячий' %}<span class="badge badge-green">{% if icons %}🔥 {% endif %}{{ value }}</span>
+{% elif value == 'Середній' or value == 'Теплий' %}<span class="badge badge-yellow">{% if icons %}🌡️ {% endif %}{{ value }}</span>
+{% elif value %}<span class="badge badge-red">{% if icons %}🧊 {% endif %}{{ value }}</span>
+{% else %}—{% endif %}
+{%- endmacro %}
+
+{% macro check_mark(item) -%}
+{% if item is mapping %}{{ '✅' if item.get('result') else '❌' }}{% else %}—{% endif %}
+{%- endmacro %}

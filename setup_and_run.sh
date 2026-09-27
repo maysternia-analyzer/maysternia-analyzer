@@ -12,12 +12,17 @@ if ! command -v python3 &>/dev/null; then
   exit 1
 fi
 
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+  echo "❌ Потрібен Python 3.10+ (зараз: $(python3 --version 2>&1))"
+  exit 1
+fi
+
 # Create .env if missing
 if [ ! -f .env ]; then
   cp .env.example .env
-  echo "⚠️  Створено .env файл. Відкрийте його і заповніть API ключі:"
-  echo "   OPENAI_API_KEY=sk-..."
+  echo "⚠️  Створено .env файл. Відкрийте його і заповніть щонайменше:"
   echo "   ANTHROPIC_API_KEY=sk-ant-..."
+  echo "   SECRET_KEY=<довгий випадковий рядок>"
   echo ""
   echo "Після цього запустіть скрипт ще раз."
   open .env 2>/dev/null || true
@@ -25,7 +30,7 @@ if [ ! -f .env ]; then
 fi
 
 # Check keys are filled
-if grep -q "sk-\.\.\." .env; then
+if grep -qE "^ANTHROPIC_API_KEY=sk-ant-\.\.\.$" .env; then
   echo "⚠️  API ключі ще не заповнені в .env!"
   echo "   Відкрийте файл .env і вставте реальні ключі."
   open .env 2>/dev/null || true
@@ -41,6 +46,8 @@ fi
 echo "📦 Встановлюємо залежності..."
 source venv/bin/activate
 pip install -q -r requirements.txt
+
+# Перший адміністратор (якщо користувачів ще немає) — python create_admin.py
 
 echo ""
 echo "✅ Все готово! Запускаємо..."

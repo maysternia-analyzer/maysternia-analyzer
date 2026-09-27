@@ -347,3 +347,68 @@ textarea.form-control { resize: vertical; min-height: 90px; }
   margin-bottom: 28px; flex-wrap: wrap;
 }
 .page-header h1 { font-size: 22px; font-weight: 700; flex: 1; }
+
+/* ── Layout helpers ── */
+.two-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.portrait-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 20px;
+}
+.user-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr auto;
+  gap: 12px;
+  align-items: flex-end;
+}
+.sidebar-user {
+  margin-top: 16px;
+  padding: 12px;
+  background: var(--surface2);
+  border-radius: var(--radius-sm);
+}
+.edit-meta-form {
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+}
+.text-block { font-size: 14px; color: var(--text-muted); line-height: 1.7; white-space: pre-line; }
+.kv-table { font-size: 13px; }
+.kv-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.kv-table td:first-child { color: var(--text-muted); white-space: nowrap; width: 40%; }
+code { background: var(--surface2); padding: 1px 6px; border-radius: 4px; font-size: 12px; word-break: break-all; }
+
+/* ── Mobile ── */
+@media (max-width: 900px) {
+  .two-columns, .portrait-grid, .user-form-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  body.with-sidebar { display: block; }
+  .sidebar {
+    position: static;
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 12px;
+  }
+  .sidebar-brand { padding: 14px 16px; margin-bottom: 8px; }
+  .sidebar-nav { flex-direction: row; flex-wrap: wrap; gap: 4px; padding: 0 12px 8px; }
+  .sidebar-link { padding: 6px 10px; font-size: 13px; }
+  .sidebar-bottom { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .sidebar-bottom > .btn { width: auto !important; }
+  .sidebar-user { margin-top: 0; flex: 1; }
+  .main-content { margin-left: 0; }
+  .container { padding: 20px 16px; }
+  .stats-grid { grid-template-columns: 1fr; }
+  .upload-card { margin: 16px auto; }
+}

@@ -1,83 +1,51 @@
 """
-Ручна синхронізація записів з Zoom Cloud.
-Запуск: python sync_zoom.py
-Запуск за останні N днів: python sync_zoom.py 7
+Ручна синхронізація записів із Zoom Cloud.
+
+    python sync_zoom.py            # поставити в чергу нові зустрічі за 3 дні
+    python sync_zoom.py 14         # за 14 днів
+    python sync_zoom.py 14 --process   # і одразу обробити їх у цьому процесі
+
+Без --process записи обробить запущений сервер (фоновий воркер).
 """
-import os, sys, requests
-from datetime import datetime, timedelta
+import argparse
+import logging
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
+
 load_dotenv(Path(__file__).parent / ".env")
+os.environ.setdefault("BACKGROUND_JOBS", "0")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-from services.zoom import download_recording
-from services.transcription import transcribe
-from services.analysis import analyze
-from services.detection import detect_type_and_name
-from database import init_db, create_record, update_record, get_all_records
-
-
-def get_token():
-    resp = requests.post(
-        "https://zoom.us/oauth/token",
-        params={"grant_type": "account_credentials", "account_id": os.environ["ZOOM_ACCOUNT_ID"]},
-        auth=(os.environ["ZOOM_CLIENT_ID"], os.environ["ZOOM_CLIENT_SECRET"]),
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
+import database as db  # noqa: E402
+from services import zoom  # noqa: E402
+from services.pipeline import run_pending_jobs  # noqa: E402
+from services.poller import poll_once  # noqa: E402
 
 
-def sync(days_back: int = 1):
-    init_db()
-    existing = {r["filename"] for r in get_all_records()}
-    token = get_token()
-    date_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Синхронізація записів Zoom")
+    parser.add_argument("days", nargs="?", type=int, default=3, help="за скільки днів (за замовчуванням 3)")
+    parser.add_argument("--process", action="store_true", help="обробити нові Zoom-записи в цьому процесі")
+    args = parser.parse_args()
 
-    meetings = requests.get(
-        "https://api.zoom.us/v2/users/me/recordings",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"page_size": 30, "from": date_from},
-    ).json().get("meetings", [])
+    db.init_db()
+    if not zoom.is_configured():
+        print("❌ Zoom не налаштовано: задайте ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET у .env")
+        return 1
 
-    print(f"\n📋 Знайдено зустрічей за останні {days_back} дн: {len(meetings)}")
-    new_count = 0
-
-    for m in meetings:
-        for f in m.get("recording_files", []):
-            if f["file_type"] not in ("MP4", "M4A"):
-                continue
-            filename = f"zoom_{f['id']}.mp4"
-            if filename in existing:
-                print(f"  ⏭  Пропускаємо (вже є): {m['topic'][:40]}")
-                continue
-
-            print(f"\n  ▶ {m['topic']} | {m['start_time'][:10]} | {m['duration']} хв")
-            try:
-                path = download_recording(f["download_url"], filename)
-                text = transcribe(path)
-                print(f"     Транскрипція: {len(text)} символів")
-
-                is_breakout = "breakout" in f.get("recording_type", "").lower()
-                det = detect_type_and_name(
-                    m["topic"], m["duration"], is_breakout,
-                    m.get("host_email", "").split("@")[0], text[:2000]
-                )
-                rec_id = create_record(
-                    m["start_time"][:10], det["record_type"], det["person_name"], filename
-                )
-                update_record(rec_id, transcription=text, status="analyzing")
-                analysis = analyze(det["record_type"], text)
-                update_record(rec_id, analysis_json=analysis, status="done")
-                print(f"     ✅ ID:{rec_id} | {det['record_type']} | {det['person_name']}")
-                new_count += 1
-            except Exception as e:
-                print(f"     ❌ Помилка: {e}")
-
-    print(f"\n✅ Синхронізацію завершено. Нових записів: {new_count}")
-    print("   Відкрий дашборд: http://localhost:5050\n")
+    summary = poll_once(args.days)
+    print(f"\n📋 Zoom за {args.days} дн.: {summary}")
+    if args.process:
+        processed = run_pending_jobs(source="zoom")
+        print(f"✅ Оброблено записів: {processed}")
+    else:
+        print("ℹ️  Записи обробить сервер. Щоб обробити тут, додайте --process")
+    return 0
 
 
 if __name__ == "__main__":
-    days = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-    sync(days)
+    sys.exit(main())

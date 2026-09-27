@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Система — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>⚙️ Система</h1>
+  <form method="POST" action="{{ url_for('admin_system_check') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-outline btn-sm">🩺 Перевірити інтеграції</button>
+  </form>
+</div>
+
+<div class="two-columns">
+  <div class="card">
+    <div class="section-title">Налаштування</div>
+    <table class="kv-table">
+      <tr><td>Zoom (S2S OAuth)</td><td>{{ '✅ налаштовано' if config.zoom else '❌ немає ZOOM_* ключів' }}</td></tr>
+      <tr><td>Zoom webhook secret</td><td>{{ '✅ задано' if config.zoom_webhook_secret else '❌ немає ZOOM_WEBHOOK_SECRET' }}</td></tr>
+      <tr><td>Webhook URL</td><td><code>{{ webhook_url }}</code></td></tr>
+      <tr><td>Claude (Anthropic)</td><td>{{ '✅' if config.anthropic else '❌' }} модель <code>{{ config.anthropic_model }}</code></td></tr>
+      <tr><td>Whisper (OpenAI)</td><td>{{ '✅ ключ задано' if config.openai else '⚠️ немає ключа — лише VTT/TXT' }}</td></tr>
+      <tr><td>ffmpeg</td><td>{{ config.ffmpeg or '❌ не знайдено' }}</td></tr>
+      <tr><td>База даних</td><td>{{ config.database }}</td></tr>
+      <tr><td>Ключ сесій</td><td>{% if secret_source == 'env' %}✅ SECRET_KEY зі змінних{% else %}⚠️ згенерований (SECRET_KEY не задано або публічно відомий){% endif %}</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title">Фонова обробка</div>
+    {% if worker %}
+    <table class="kv-table">
+      <tr><td>Останній heartbeat</td><td>{{ worker.at|localtime('%Y-%m-%d %H:%M:%S') }} (pid {{ worker.pid }})</td></tr>
+      <tr><td>Зараз обробляються</td><td>{% if worker.active %}{% for rid in worker.active %}<a href="{{ url_for('record_detail', record_id=rid) }}">#{{ rid }}</a> {% endfor %}{% else %}—{% endif %}</td></tr>
+      <tr><td>Паралельних задач</td><td>{{ worker.concurrency }}</td></tr>
+      <tr><td>Остання перевірка Zoom</td><td>{{ worker.last_poll_at|localtime if worker.last_poll_at else '—' }}
+        {% if worker.last_poll_error %}<div style="color:var(--red);font-size:12px">{{ worker.last_poll_error }}</div>
+        {% elif worker.last_poll_result %}<div style="color:var(--text-muted);font-size:12px">{{ worker.last_poll_result }}</div>{% endif %}</td></tr>
+    </table>
+    {% else %}
+    <p style="color:var(--text-muted);font-size:14px">Воркер ще не звітував (зачекайте хвилину після старту).</p>
+    {% endif %}
+    <div class="section-title" style="margin-top:16px">Записи за статусом</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      {% for status, n in status_counts.items() %}<span class="badge badge-gray">{{ status }}: {{ n }}</span>{% endfor %}
+    </div>
+    {% if config.zoom %}
+    <form method="POST" action="{{ url_for('admin_system_poll') }}" style="margin-top:16px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="filter-group">
+        <label class="filter-label">Перевірити Zoom за днів</label>
+        <input type="number" name="days" value="3" min="1" max="180" class="form-control" style="width:100px">
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">🔄 Перевірити Zoom зараз</button>
+    </form>
+    <p style="font-size:12px;color:var(--text-muted);margin-top:8px">
+      Нові зустрічі (довші за {{ 3 }} хв) стануть у чергу. Вже оброблені повторно не додаються.
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="padding:0;overflow:hidden">
+  <div style="padding:16px 20px 0" class="section-title">Журнал вебхуків Zoom (останні 50)</div>
+  <div class="table-wrap">
+    {% if webhook_logs %}
+    <table>
+      <thead><tr><th>Час</th><th>Подія</th><th>Результат</th><th>Деталі</th></tr></thead>
+      <tbody>
+        {% for l in webhook_logs %}
+        <tr>
+          <td style="white-space:nowrap;font-size:13px">{{ l.received_at|localtime('%m-%d %H:%M:%S') }}</td>
+          <td style="font-size:13px">{{ l.event }}</td>
+          <td><span class="badge {{ 'badge-red' if (l.status or '').startswith('error') else 'badge-green' if l.status in ('queued', 'woken', 'processing_started') else 'badge-gray' }}">{{ l.status }}</span></td>
+          <td style="font-size:12px;color:var(--text-muted);word-break:break-word">{{ l.details }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="padding:30px;text-align:center;color:var(--text-muted)">Вебхуків ще не було.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

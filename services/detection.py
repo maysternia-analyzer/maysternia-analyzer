@@ -1,69 +1,83 @@
-import os
-import json
-import re
-import anthropic
+"""Визначення типу Zoom-запису (заняття / продаж) та імені тренера чи менеджера."""
+import logging
 
-DETECT_PROMPT = """Ти аналізуєш запис онлайн-школи "Майстерня скілів" (розвиток харизми).
+from services import llm
+from services.transcript_text import IGNORED_SPEAKERS, speaker_stats
+
+log = logging.getLogger(__name__)
+
+DETECT_SYSTEM = """Ти аналізуєш запис онлайн-школи "Майстерня скілів" (розвиток харизми).
 
 Контекст:
-- "Пробне заняття" = тренер проводить групове заняття з вправами з харизми/впевненості
-- "Продаж" = менеджер один на один з клієнтом, обговорює курс "Код Харизми" за 15 000–30 000 грн
+- "Пробне заняття" (lesson) = тренер проводить групове заняття з вправами з харизми/впевненості
+- "Продаж" (sales) = менеджер один на один з клієнтом, обговорює курс "Код Харизми" за 15 000–30 000 грн
 
-Дані зустрічі з Zoom:
-Тема: {topic}
-Тривалість: {duration} хв
-Тип кімнати: {room_type}
+Визнач тип запису та імʼя людини, яка веде зустріч (тренер для lesson, менеджер для sales).
+Імʼя бери зі списку спікерів, як воно записане в Zoom. Не використовуй назву акаунта організатора
+(наприклад, "Код Харизми") як імʼя ведучого."""
 
-Початок транскрипції (перші 2 хвилини):
-{transcript_preview}
+DETECT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "record_type": {"type": "string", "enum": ["lesson", "sales"]},
+        "person_name": {"type": "string"},
+        "confidence": {"type": "integer"},
+        "reason": {"type": "string"},
+    },
+    "required": ["record_type", "person_name", "confidence", "reason"],
+    "additionalProperties": False,
+}
 
-Відповідай ТІЛЬКИ валідним JSON:
-{{
-  "record_type": "lesson" або "sales",
-  "person_name": "Ім'я тренера або менеджера (хто веде)",
-  "confidence": 0-100,
-  "reason": "коротке пояснення (1 речення)"
-}}"""
+
+def _heuristic_type(duration: int, is_breakout: bool) -> str | None:
+    if is_breakout and duration <= 60:
+        return "sales"   # коротка breakout-кімната — індивідуальний продаж
+    if not is_breakout and duration >= 60:
+        return "lesson"  # довга головна кімната — групове заняття
+    return None
+
+
+def guess_type(duration: int, is_breakout: bool) -> str:
+    return _heuristic_type(duration, is_breakout) or ("sales" if duration < 60 else "lesson")
 
 
 def detect_type_and_name(topic: str, duration: int, is_breakout: bool,
-                          host_name: str, transcript_preview: str) -> dict:
-    room_type = "Breakout Room (індивідуальна кімната)" if is_breakout else "Головна кімната (групова)"
+                         transcript: str, fallback_name: str = "Невідомо") -> dict:
+    """Повертає {record_type, person_name, reason}. Ніколи не кидає виключень."""
+    speakers = speaker_stats(transcript)
+    top_speaker = speakers[0]["speaker"] if speakers else ""
+    heuristic = _heuristic_type(duration, is_breakout)
 
-    # Fast heuristic — breakout room is almost always sales
-    if is_breakout and duration <= 60:
-        return {
-            "record_type": "sales",
-            "person_name": host_name,
-            "confidence": 90,
-            "reason": "Breakout room короткої тривалості — індивідуальний продаж",
-        }
+    if heuristic and top_speaker:
+        return {"record_type": heuristic, "person_name": top_speaker,
+                "reason": "евристика за тривалістю/типом кімнати; імʼя — найактивніший спікер"}
 
-    # Main room long duration — almost always lesson
-    if not is_breakout and duration >= 60:
-        return {
-            "record_type": "lesson",
-            "person_name": host_name,
-            "confidence": 90,
-            "reason": "Головна кімната тривалого заняття",
-        }
+    # Неоднозначний тип або немає імен спікерів (текст Whisper) — питаємо Claude.
+    if llm.is_configured():
+        speaker_lines = "\n".join(
+            f"- {s['speaker']}: {s['chars']} символів, {s['turns']} реплік" for s in speakers[:10]
+        ) or "(імена спікерів недоступні — визнач імʼя ведучого з тексту, якщо він представився)"
+        hint = f"\nЙмовірний тип за тривалістю: {heuristic}" if heuristic else ""
+        user = (
+            f"Тема: {topic}\nТривалість: {duration} хв\n"
+            f"Тип кімнати: {'Breakout Room (індивідуальна)' if is_breakout else 'Головна кімната'}{hint}\n\n"
+            f"Спікери (скільки говорили):\n{speaker_lines}\n\n"
+            f"Початок транскрипції:\n<transcript>\n{(transcript or '')[:6000]}\n</transcript>"
+        )
+        try:
+            # Запас max_tokens: новіші моделі за замовчуванням «думають», і це входить у ліміт.
+            result = llm.call_json(DETECT_SYSTEM, user, DETECT_SCHEMA, max_tokens=4096)
+            name = (result.get("person_name") or "").strip()
+            if not name or name.lower() in IGNORED_SPEAKERS:
+                name = top_speaker or fallback_name
+            record_type = heuristic or result.get("record_type")
+            if record_type not in ("lesson", "sales"):
+                record_type = guess_type(duration, is_breakout)
+            return {"record_type": record_type, "person_name": name[:120],
+                    "reason": (result.get("reason") or "")[:300]}
+        except Exception as e:  # визначення не повинне ламати обробку
+            log.warning("Визначення типу через Claude не вдалося: %s", e)
 
-    # Ambiguous — ask Claude
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    preview = transcript_preview[:2000] if transcript_preview else "транскрипція недоступна"
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=200,
-        messages=[{"role": "user", "content": DETECT_PROMPT.format(
-            topic=topic, duration=duration,
-            room_type=room_type, transcript_preview=preview,
-        )}],
-    )
-    raw = message.content[0].text.strip()
-    raw = re.sub(r"^```[a-z]*\n?", "", raw)
-    raw = re.sub(r"```$", "", raw).strip()
-    result = json.loads(raw)
-    # Fallback name to host if AI returns empty
-    if not result.get("person_name"):
-        result["person_name"] = host_name
-    return result
+    return {"record_type": guess_type(duration, is_breakout),
+            "person_name": top_speaker or fallback_name,
+            "reason": "запасна евристика"}

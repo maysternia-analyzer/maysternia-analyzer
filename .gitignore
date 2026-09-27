@@ -3,7 +3,10 @@
 
 # Database & uploads (хранятся на сервере, не в git)
 data.db
+data.db-wal
+data.db-shm
 uploads/
+*.part
 
 # Python
 venv/
@@ -11,6 +14,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+.pytest_cache/
 
 # OS
 .DS_Store
@@ -18,3 +22,8 @@ __pycache__/
 # Logs
 *.log
 /tmp/
+
+# Секреты и доступы (не коммитить!)
+ПРОЕКТ_ЭКСПОРТ.md
+*ЭКСПОРТ*.md
+project_export.md

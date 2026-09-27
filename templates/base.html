@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>{% block title %}Майстерня Аналізатор{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -33,24 +34,32 @@
     <a href="{{ url_for('analytics_page') }}" class="sidebar-link {{ 'active' if request.endpoint == 'analytics_page' }}">
       <span class="sidebar-icon">🧠</span> Аналітика
     </a>
+    {% if current_user.is_authenticated and current_user.is_admin() %}
+    <a href="{{ url_for('admin_system') }}" class="sidebar-link {{ 'active' if request.endpoint == 'admin_system' }}">
+      <span class="sidebar-icon">⚙️</span> Система
+    </a>
+    {% endif %}
   </nav>
 
   <div class="sidebar-bottom">
     <a href="{{ url_for('upload') }}" class="btn btn-primary" style="width:100%;justify-content:center">
-      + Нова запис
+      + Новий запис
     </a>
 
     {% if current_user.is_authenticated %}
-    <div style="margin-top:16px;padding:12px;background:var(--surface2);border-radius:var(--radius-sm)">
+    <div class="sidebar-user">
       <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px">{{ current_user.name }}</div>
       <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
-        {% if current_user.role == 'admin' %}👑 Адмін{% else %}👁 Переглядач{% endif %}
+        {% if current_user.is_admin() %}👑 Адмін{% else %}👁 Переглядач{% endif %}
       </div>
       <div style="display:flex;gap:6px">
         {% if current_user.is_admin() %}
         <a href="{{ url_for('admin_users') }}" class="btn btn-outline btn-sm" style="flex:1;justify-content:center;font-size:12px">👥 Юзери</a>
         {% endif %}
-        <a href="{{ url_for('logout') }}" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center;font-size:12px">Вийти</a>
+        <form method="POST" action="{{ url_for('logout') }}" style="flex:1;display:flex">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-ghost btn-sm" style="flex:1;justify-content:center;font-size:12px">Вийти</button>
+        </form>
       </div>
     </div>
     {% endif %}
@@ -59,10 +68,16 @@
 
 <main class="main-content">
   <div class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+      <div class="alert {{ 'alert-error' if category == 'error' else 'alert-success' }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
     {% block content %}{% endblock %}
   </div>
 </main>
 
 <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

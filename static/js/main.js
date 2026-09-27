@@ -1,3 +1,30 @@
+// ── API helper (CSRF + JSON) ─────────────────────────────────────────────────
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || "";
+
+async function apiPost(url, data = {}) {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF_TOKEN },
+      body: JSON.stringify(data),
+      credentials: "same-origin",
+    });
+    const isJson = (res.headers.get("content-type") || "").includes("application/json");
+    if (res.redirected || !isJson) {
+      // сесія завершилась: сервер перенаправив на сторінку входу
+      return { ok: false, error: "Сесія завершилась — оновіть сторінку та увійдіть знову" };
+    }
+    const body = await res.json();
+    if (!res.ok || body.ok === false) {
+      return { ok: false, error: body.error || `Помилка сервера (${res.status})` };
+    }
+    return { ok: true, ...body };
+  } catch (e) {
+    return { ok: false, error: "Немає зʼєднання з сервером" };
+  }
+}
+window.apiPost = apiPost;
+
 document.addEventListener("DOMContentLoaded", () => {
 
   // ── Drop zone ──────────────────────────────────────────────────────────────
@@ -6,58 +33,76 @@ document.addEventListener("DOMContentLoaded", () => {
   const fileNameEl = document.getElementById("file-name");
 
   if (dropZone && fileInput) {
+    const showName = (file) => {
+      if (fileNameEl) { fileNameEl.textContent = file.name; fileNameEl.style.display = "block"; }
+    };
     dropZone.addEventListener("click", () => fileInput.click());
     dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
     dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
     dropZone.addEventListener("drop", (e) => {
       e.preventDefault(); dropZone.classList.remove("dragover");
       const file = e.dataTransfer.files[0];
-      if (file) setFile(file);
-    });
-    fileInput.addEventListener("change", () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
-    function setFile(file) {
+      if (!file) return;
       const dt = new DataTransfer(); dt.items.add(file); fileInput.files = dt.files;
-      if (fileNameEl) { fileNameEl.textContent = file.name; fileNameEl.style.display = "block"; }
-    }
+      showName(file);
+    });
+    fileInput.addEventListener("change", () => { if (fileInput.files[0]) showName(fileInput.files[0]); });
   }
 
   // ── Radio option highlight ─────────────────────────────────────────────────
-  document.querySelectorAll(".radio-option").forEach((opt) => {
+  const radioOptions = document.querySelectorAll(".radio-option");
+  radioOptions.forEach((opt) => {
     const radio = opt.querySelector("input[type='radio']");
-    if (radio) {
-      const update = () => {
-        document.querySelectorAll(".radio-option").forEach((o) => o.classList.remove("selected"));
-        if (radio.checked) opt.classList.add("selected");
-      };
-      radio.addEventListener("change", update);
+    if (!radio) return;
+    radio.addEventListener("change", () => {
+      radioOptions.forEach((o) => o.classList.remove("selected"));
       if (radio.checked) opt.classList.add("selected");
-    }
+    });
+    if (radio.checked) opt.classList.add("selected");
   });
 
   // ── Auto-refresh processing + browser notification ─────────────────────────
   const processingCard = document.getElementById("processing-card");
   if (processingCard) {
     const recordId = processingCard.dataset.recordId;
-    if (Notification.permission === "default") Notification.requestPermission();
+    const canNotify = "Notification" in window;
+    if (canNotify && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+    const statusEl = document.getElementById("processing-status");
+    const noteEl = document.getElementById("processing-note");
+    const labels = {
+      queued: "В черзі на обробку...",
+      processing: "Отримуємо транскрипцію запису...",
+      analyzing: "AI аналізує розмову...",
+    };
     const poll = setInterval(async () => {
-      const res = await fetch(`/record/${recordId}/status`);
-      const data = await res.json();
+      let data;
+      try {
+        const res = await fetch(`/record/${recordId}/status`, { credentials: "same-origin" });
+        if (res.status === 401 || res.status === 404) { clearInterval(poll); return; }
+        if (!res.ok) return;
+        data = await res.json();
+      } catch (_) { return; }
       if (data.status === "done" || data.status === "error") {
         clearInterval(poll);
-        if (Notification.permission === "granted") {
-          new Notification("Майстерня Аналізатор", {
-            body: data.status === "done" ? "✅ Аналіз завершено — запис готовий!" : "❌ Помилка при обробці запису",
-            icon: "/static/favicon.ico",
-          });
+        if (canNotify && Notification.permission === "granted") {
+          try {
+            new Notification("Майстерня Аналізатор", {
+              body: data.status === "done" ? "✅ Аналіз завершено — запис готовий!" : "❌ Помилка при обробці запису",
+            });
+          } catch (_) { /* мобільні браузери можуть не підтримувати */ }
         }
         location.reload();
+        return;
       }
-      const statusEl = document.getElementById("processing-status");
       if (statusEl) {
-        if (data.status === "processing") statusEl.textContent = "Транскрибуємо запис...";
-        if (data.status === "analyzing") statusEl.textContent = "AI аналізує розмову...";
+        statusEl.textContent = data.waiting
+          ? `Очікуємо транскрипцію від Zoom (перевірка о ${data.not_before.slice(11, 16)})`
+          : (labels[data.status] || data.status);
       }
-    }, 3000);
+      if (noteEl && data.error_message) noteEl.textContent = data.error_message;
+    }, 4000);
   }
 
   // ── Comment save ───────────────────────────────────────────────────────────
@@ -65,12 +110,10 @@ document.addEventListener("DOMContentLoaded", () => {
   if (commentBtn) {
     commentBtn.addEventListener("click", async () => {
       const text = document.getElementById("comment-field").value;
-      const recordId = commentBtn.dataset.recordId;
-      await fetch(`/record/${recordId}/comment`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ comment: text }),
-      });
+      commentBtn.disabled = true;
+      const result = await apiPost(`/record/${commentBtn.dataset.recordId}/comment`, { comment: text });
+      commentBtn.disabled = false;
+      if (!result.ok) { alert(result.error); return; }
       commentBtn.textContent = "Збережено ✓";
       commentBtn.classList.add("btn-outline"); commentBtn.classList.remove("btn-primary");
       setTimeout(() => {
@@ -80,31 +123,27 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // ── Re-analyze ─────────────────────────────────────────────────────────────
-  const reanalyzeBtn = document.getElementById("reanalyze-btn");
-  if (reanalyzeBtn) {
-    reanalyzeBtn.addEventListener("click", async () => {
-      const recordId = reanalyzeBtn.dataset.recordId;
-      reanalyzeBtn.textContent = "Аналізуємо..."; reanalyzeBtn.disabled = true;
-      await fetch(`/record/${recordId}/reanalyze`, { method: "POST" });
-      const wait = setInterval(async () => {
-        const res = await fetch(`/record/${recordId}/status`);
-        const data = await res.json();
-        if (data.status === "done" || data.status === "error") { clearInterval(wait); location.reload(); }
-      }, 3000);
+  // ── Re-analyze / retry ─────────────────────────────────────────────────────
+  document.querySelectorAll(".reanalyze-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const original = btn.textContent;
+      btn.textContent = "Запускаємо..."; btn.disabled = true;
+      const result = await apiPost(`/record/${btn.dataset.recordId}/reanalyze`, { mode: btn.dataset.mode || "auto" });
+      if (!result.ok) {
+        alert(result.error);
+        btn.textContent = original; btn.disabled = false;
+        return;
+      }
+      location.reload();
     });
-  }
+  });
 
-  // ── Sale result buttons ────────────────────────────────────────────────────
+  // ── Sale result ────────────────────────────────────────────────────────────
   document.querySelectorAll(".sale-result-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const recordId = btn.dataset.recordId;
-      const val = parseInt(btn.dataset.val);
-      await fetch(`/record/${recordId}/sale_result`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sale_made: val === 1, sale_amount: null }),
-      });
+      const result = await apiPost(`/record/${btn.dataset.recordId}/sale_result`,
+                                   { sale_made: btn.dataset.val === "1" });
+      if (!result.ok) { alert(result.error); return; }
       location.reload();
     });
   });
@@ -112,12 +151,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const clearSaleBtn = document.getElementById("clear-sale-btn");
   if (clearSaleBtn) {
     clearSaleBtn.addEventListener("click", async () => {
-      const recordId = clearSaleBtn.dataset.recordId;
-      await fetch(`/record/${recordId}/sale_result`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sale_made: null, sale_amount: null }),
-      });
+      const result = await apiPost(`/record/${clearSaleBtn.dataset.recordId}/sale_result`,
+                                   { sale_made: null, sale_amount: null });
+      if (!result.ok) { alert(result.error); return; }
       location.reload();
     });
   }
@@ -125,13 +161,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const saveAmountBtn = document.getElementById("save-amount-btn");
   if (saveAmountBtn) {
     saveAmountBtn.addEventListener("click", async () => {
-      const recordId = saveAmountBtn.dataset.recordId;
-      const amount = parseFloat(document.getElementById("sale-amount-input").value) || null;
-      await fetch(`/record/${recordId}/sale_result`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sale_made: true, sale_amount: amount }),
-      });
+      const raw = document.getElementById("sale-amount-input").value.trim();
+      const amount = raw === "" ? null : Number(raw);
+      if (amount !== null && (!Number.isFinite(amount) || amount < 0)) { alert("Введіть коректну суму"); return; }
+      const result = await apiPost(`/record/${saveAmountBtn.dataset.recordId}/sale_result`,
+                                   { sale_made: true, sale_amount: amount });
+      if (!result.ok) { alert(result.error); return; }
       saveAmountBtn.textContent = "Збережено ✓";
       setTimeout(() => { saveAmountBtn.textContent = "Зберегти"; }, 2000);
     });
@@ -146,21 +181,36 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     editForm.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const recordId = editForm.dataset.recordId;
       const type = editForm.querySelector("[name=record_type]").value;
-      const name = editForm.querySelector("[name=person_name]").value;
-      await fetch(`/record/${recordId}/meta`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ record_type: type, person_name: name }),
-      });
+      const name = editForm.querySelector("[name=person_name]").value.trim();
+      if (type !== editForm.dataset.currentType &&
+          !confirm("Змінити тип запису? AI-аналіз буде виконано заново.")) return;
+      const result = await apiPost(`/record/${editForm.dataset.recordId}/meta`,
+                                   { record_type: type, person_name: name });
+      if (!result.ok) { alert(result.error); return; }
       location.reload();
     });
   }
 
+  // ── Admin: password form toggle + confirm forms ────────────────────────────
+  document.querySelectorAll(".pw-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const form = document.getElementById(`pw-form-${btn.dataset.userId}`);
+      if (form) form.style.display = form.style.display === "none" ? "flex" : "none";
+    });
+  });
+  document.querySelectorAll("form.confirm-form").forEach((form) => {
+    form.addEventListener("submit", (e) => {
+      if (!confirm(form.dataset.confirm || "Підтвердити дію?")) e.preventDefault();
+    });
+  });
+
   // ── Table row click ────────────────────────────────────────────────────────
   document.querySelectorAll("tr.clickable").forEach((row) => {
-    row.addEventListener("click", () => { if (row.dataset.href) window.location.href = row.dataset.href; });
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("a, button, input, select, textarea")) return;
+      if (row.dataset.href) window.location.href = row.dataset.href;
+    });
   });
 
   // ── Table sort ─────────────────────────────────────────────────────────────
@@ -170,40 +220,37 @@ document.addEventListener("DOMContentLoaded", () => {
     th.addEventListener("click", () => {
       const table = th.closest("table");
       const tbody = table.querySelector("tbody");
-      const col = parseInt(th.dataset.sort);
+      const col = parseInt(th.dataset.sort, 10);
       const asc = th.dataset.dir !== "asc";
       th.dataset.dir = asc ? "asc" : "desc";
 
-      // Reset other headers
-      table.querySelectorAll("th[data-sort]").forEach((h) => {
-        h.querySelector(".sort-arrow")?.remove();
-      });
+      table.querySelectorAll("th[data-sort] .sort-arrow").forEach((a) => a.remove());
       const arrow = document.createElement("span");
       arrow.className = "sort-arrow";
       arrow.textContent = asc ? " ▲" : " ▼";
       arrow.style.color = "var(--accent)";
       th.appendChild(arrow);
 
+      const value = (row) => {
+        const cell = row.cells[col];
+        if (!cell) return "";
+        return cell.dataset.val ?? cell.textContent.trim();
+      };
       const rows = Array.from(tbody.querySelectorAll("tr"));
       rows.sort((a, b) => {
-        const av = a.cells[col]?.dataset.val ?? a.cells[col]?.textContent.trim() ?? "";
-        const bv = b.cells[col]?.dataset.val ?? b.cells[col]?.textContent.trim() ?? "";
-        const an = parseFloat(av), bn = parseFloat(bv);
-        if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+        const av = value(a), bv = value(b);
+        const an = Number(av), bn = Number(bv);
+        if (av !== "" && bv !== "" && !isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
         return asc ? av.localeCompare(bv, "uk") : bv.localeCompare(av, "uk");
       });
       rows.forEach((r) => tbody.appendChild(r));
     });
   });
 
-});
-
-// ── Score bar color ────────────────────────────────────────────────────────
-function scoreColor(s) {
-  return s >= 75 ? "#27ae60" : s >= 50 ? "#f39c12" : "#e74c3c";
-}
-document.querySelectorAll(".score-bar-fill").forEach((el) => {
-  const pct = parseInt(el.dataset.score || 0);
-  el.style.width = pct + "%";
-  el.style.background = scoreColor(pct);
+  // ── Score bars ─────────────────────────────────────────────────────────────
+  document.querySelectorAll(".score-bar-fill").forEach((el) => {
+    const pct = Math.max(0, Math.min(100, parseInt(el.dataset.score || "0", 10) || 0));
+    el.style.width = pct + "%";
+    el.style.background = pct >= 75 ? "#27ae60" : pct >= 50 ? "#f39c12" : "#e74c3c";
+  });
 });

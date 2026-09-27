@@ -19,20 +19,26 @@
   <div class="card">
     <div style="font-size:18px;font-weight:600;margin-bottom:20px">Вхід до системи</div>
 
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+      <div class="alert {{ 'alert-error' if category in ('error', 'message') else 'alert-success' }}" style="margin-bottom:16px">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
     {% if error %}
     <div class="alert alert-error" style="margin-bottom:16px">{{ error }}</div>
     {% endif %}
 
-    <form method="POST" action="{{ url_for('login') }}">
+    <form method="POST" action="{{ url_for('login', next=request.args.get('next')) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="form-group">
         <label class="form-label" for="email">Email</label>
         <input class="form-control" type="email" id="email" name="email"
-               placeholder="your@email.com" required autofocus>
+               placeholder="your@email.com" autocomplete="username" required autofocus>
       </div>
       <div class="form-group">
         <label class="form-label" for="password">Пароль</label>
         <input class="form-control" type="password" id="password" name="password"
-               placeholder="••••••••" required>
+               placeholder="••••••••" autocomplete="current-password" required>
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;padding:13px;margin-top:8px">
         Увійти →

@@ -6,7 +6,7 @@
   <h1>🧠 Аналітика бази</h1>
   {% if insights %}
   <span style="font-size:13px;color:var(--text-muted)">
-    Оновлено: {{ insights.updated_at[:16].replace('T',' ') }}
+    Оновлено: {{ insights.updated_at|localtime }}
   </span>
   {% endif %}
 </div>
@@ -28,7 +28,7 @@
     <span id="generate-status" style="font-size:13px;color:var(--text-muted)"></span>
   </div>
   <p style="margin-top:12px;font-size:13px;color:var(--text-muted)">
-    AI проаналізує всі записи за вибраний період і сформує інсайти. Займає ~30 секунд.
+    AI проаналізує всі записи за вибраний період і сформує інсайти. Займає до 1–2 хвилин.
   </p>
 </div>
 
@@ -41,7 +41,7 @@
   </p>
 </div>
 {% else %}
-{% set d = insights.data %}
+{% set d = insights.data or {} %}
 
 {# ── Summary ── #}
 <div class="card" style="margin-bottom:20px;border-left:4px solid var(--accent)">
@@ -49,35 +49,35 @@
   <p style="font-size:15px;line-height:1.7">{{ d.summary }}</p>
 </div>
 
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+<div class="two-columns">
 
   {# ── Sales patterns ── #}
   <div class="card">
     <div class="section-title">📈 Закономірності продажів</div>
-    {% set sp = d.sales_patterns %}
+    {% set sp = d.sales_patterns or {} %}
     <div style="display:flex;gap:24px;margin-bottom:16px;flex-wrap:wrap">
-      {% if sp.avg_checklist_score is not none %}
+      {% if sp.avg_checklist_score is number %}
       <div>
         <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Чек-ліст</div>
         <div style="font-size:24px;font-weight:700;color:{% if sp.avg_checklist_score>=75 %}var(--green){% elif sp.avg_checklist_score>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ sp.avg_checklist_score }}%</div>
       </div>
       {% endif %}
-      {% if sp.conversion_rate is not none %}
+      {% if sp.conversion_rate is number %}
       <div>
-        <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Конверсія</div>
+        <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase" title="Частка закритих угод серед записів з відміченим результатом">Конверсія</div>
         <div style="font-size:24px;font-weight:700;color:var(--accent)">{{ sp.conversion_rate }}%</div>
       </div>
       {% endif %}
       {% if sp.total_revenue %}
       <div>
         <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Виручка</div>
-        <div style="font-size:24px;font-weight:700;color:var(--green)">{{ "{:,.0f}".format(sp.total_revenue) }} ₴</div>
+        <div style="font-size:24px;font-weight:700;color:var(--green)">{{ sp.total_revenue|money }} ₴</div>
       </div>
       {% endif %}
       {% if sp.avg_deal_size %}
       <div>
         <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Сер. угода</div>
-        <div style="font-size:24px;font-weight:700;color:var(--text)">{{ "{:,.0f}".format(sp.avg_deal_size) }} ₴</div>
+        <div style="font-size:24px;font-weight:700;color:var(--text)">{{ sp.avg_deal_size|money }} ₴</div>
       </div>
       {% endif %}
     </div>
@@ -110,8 +110,8 @@
   {# ── Lesson insights ── #}
   <div class="card">
     <div class="section-title">🎓 Інсайти занять</div>
-    {% set li = d.lesson_insights %}
-    {% if li.avg_score is not none %}
+    {% set li = d.lesson_insights or {} %}
+    {% if li.avg_score is number %}
     <div style="margin-bottom:16px">
       <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase">Середня оцінка</div>
       <div style="font-size:24px;font-weight:700;color:{% if li.avg_score>=75 %}var(--green){% elif li.avg_score>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ li.avg_score }}%</div>
@@ -147,8 +147,8 @@
 {# ── Audience portrait ── #}
 <div class="card" style="margin-bottom:20px">
   <div class="section-title">👤 Портрет цільової аудиторії</div>
-  {% set ap = d.audience_portrait %}
-  <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:20px;flex-wrap:wrap">
+  {% set ap = d.audience_portrait or {} %}
+  <div class="portrait-grid">
     <div>
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;font-weight:600">Опис</div>
       <p style="font-size:14px;line-height:1.6;color:var(--text)">{{ ap.description }}</p>
@@ -158,31 +158,31 @@
     </div>
     <div>
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;font-weight:600">🎯 Цілі</div>
-      {% for g in ap.main_goals %}
+      {% for g in ap.main_goals or [] %}
       <div style="font-size:13px;padding:3px 0;color:var(--text-muted)">• {{ g }}</div>
       {% endfor %}
     </div>
     <div>
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;font-weight:600">😣 Болі</div>
-      {% for p in ap.pain_points %}
+      {% for p in ap.pain_points or [] %}
       <div style="font-size:13px;padding:3px 0;color:var(--text-muted)">• {{ p }}</div>
       {% endfor %}
     </div>
     <div>
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;font-weight:600">💡 Фактори рішення</div>
-      {% for f in ap.decision_factors %}
+      {% for f in ap.decision_factors or [] %}
       <div style="font-size:13px;padding:3px 0;color:var(--text-muted)">• {{ f }}</div>
       {% endfor %}
     </div>
   </div>
 </div>
 
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+<div class="two-columns">
 
   {# ── Top needs ── #}
   <div class="card">
     <div class="section-title">💬 Топ потреб клієнтів</div>
-    {% for n in d.top_needs %}
+    {% for n in d.top_needs or [] %}
     <div style="padding:10px 0;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
         <span style="font-size:14px;font-weight:600">{{ n.need }}</span>
@@ -198,7 +198,7 @@
   {# ── Top objections ── #}
   <div class="card">
     <div class="section-title">🚧 Топ заперечень</div>
-    {% for o in d.top_objections %}
+    {% for o in d.top_objections or [] %}
     <div style="padding:10px 0;border-bottom:1px solid var(--border)">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
         <span style="font-size:14px;font-weight:600">{{ o.objection }}</span>
@@ -233,24 +233,23 @@
 
 {% endif %}{# end if insights #}
 
+
+{% endblock %}
+
+{% block scripts %}
 <script>
 document.getElementById('generate-btn').addEventListener('click', async () => {
   const btn = document.getElementById('generate-btn');
   const status = document.getElementById('generate-status');
   btn.disabled = true;
   btn.textContent = '⏳ Аналізуємо...';
-  status.textContent = 'Це займає ~30 секунд';
+  status.textContent = 'Це займає до 1–2 хвилин';
 
   const from = document.getElementById('af-from').value;
   const to = document.getElementById('af-to').value;
 
   try {
-    const res = await fetch('/analytics/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date_from: from, date_to: to }),
-    });
-    const data = await res.json();
+    const data = await apiPost('/analytics/generate', { date_from: from, date_to: to });
     if (data.ok) {
       const params = new URLSearchParams();
       if (from) params.set('date_from', from);

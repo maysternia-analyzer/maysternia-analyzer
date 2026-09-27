@@ -1,225 +1,368 @@
-import os
+"""
+Інтеграція з Zoom (Server-to-Server OAuth): токени, API хмарних записів,
+вибір файлу для обробки, завантаження VTT/медіа, перевірка підпису вебхука.
+"""
 import hashlib
 import hmac
+import logging
+import os
+import re
+import threading
 import time
-import requests
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote, urlparse
 
-UPLOAD_FOLDER = Path(__file__).parent.parent / "uploads"
-UPLOAD_FOLDER.mkdir(exist_ok=True)
+import requests
 
+from services.timeutil import parse_iso
+from services.transcript_text import transcript_from_file_bytes
 
-def get_access_token() -> str:
-    resp = requests.post(
-        "https://zoom.us/oauth/token",
-        params={"grant_type": "account_credentials", "account_id": os.environ["ZOOM_ACCOUNT_ID"]},
-        auth=(os.environ["ZOOM_CLIENT_ID"], os.environ["ZOOM_CLIENT_SECRET"]),
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
+log = logging.getLogger(__name__)
 
+API_BASE = "https://api.zoom.us/v2"
+TOKEN_URL = "https://zoom.us/oauth/token"
+UPLOAD_FOLDER = Path(__file__).resolve().parent.parent / "uploads"
 
-def verify_webhook_signature(request_body: bytes, timestamp: str, signature: str) -> bool:
-    secret = os.environ["ZOOM_WEBHOOK_SECRET"]
-    msg = f"v0:{timestamp}:{request_body.decode()}"
-    expected = "v0=" + hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+ZOOM_USER = os.environ.get("ZOOM_USER_ID", "me")
+MIN_DURATION_MINUTES = int(os.environ.get("ZOOM_MIN_DURATION_MINUTES", "3"))
+MAX_MEDIA_BYTES = 3 * 1024 ** 3
+_HTTP_TIMEOUT = (15, 120)  # (connect, read)
 
 
-def _get_fresh_download_url(zoom_file_id: str, token: str) -> str | None:
-    """Look up fresh /rec/download/ URL from Zoom API by file ID."""
-    from datetime import datetime, timedelta
-    date_from = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    meetings = requests.get(
-        "https://api.zoom.us/v2/users/me/recordings",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"page_size": 100, "from": date_from},
-        timeout=15,
-    ).json().get("meetings", [])
-    for m in meetings:
-        for f in m.get("recording_files", []):
-            if str(f.get("id")) == zoom_file_id:
-                return f.get("download_url")
+def redact(text: str) -> str:
+    """Прибирає OAuth-токен з текстів помилок (URL завантаження містить access_token)."""
+    return re.sub(r"(access_token=)[^&\s'\"]+", r"\1***", str(text))
+
+
+class ZoomError(RuntimeError):
+    """Помилка Zoom API. transient=True — варто повторити пізніше."""
+
+    def __init__(self, message: str, transient: bool = False, status: int | None = None):
+        super().__init__(redact(message))
+        self.transient = transient
+        self.status = status
+
+
+def is_configured() -> bool:
+    return all(os.environ.get(k) for k in ("ZOOM_ACCOUNT_ID", "ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET"))
+
+
+# ── OAuth ─────────────────────────────────────────────────────────────────────
+
+_token_lock = threading.Lock()
+_token_cache = {"token": None, "expires_at": 0.0}
+
+
+def get_access_token(force_refresh: bool = False) -> str:
+    """Токен Server-to-Server OAuth (живе 1 год, кешується)."""
+    if not is_configured():
+        raise ZoomError("Zoom не налаштовано: задайте ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET")
+    with _token_lock:
+        if (not force_refresh and _token_cache["token"]
+                and time.time() < _token_cache["expires_at"] - 120):
+            return _token_cache["token"]
+        try:
+            resp = requests.post(
+                TOKEN_URL,
+                params={"grant_type": "account_credentials", "account_id": os.environ["ZOOM_ACCOUNT_ID"]},
+                auth=(os.environ["ZOOM_CLIENT_ID"], os.environ["ZOOM_CLIENT_SECRET"]),
+                timeout=20,
+            )
+        except requests.RequestException as e:
+            raise ZoomError(f"Zoom OAuth недоступний: {e}", transient=True) from e
+        if resp.status_code != 200:
+            raise ZoomError(
+                f"Zoom OAuth відхилив ключі ({resp.status_code}): {resp.text[:200]}",
+                transient=resp.status_code >= 500, status=resp.status_code,
+            )
+        data = resp.json()
+        _token_cache["token"] = data["access_token"]
+        _token_cache["expires_at"] = time.time() + int(data.get("expires_in", 3600))
+        return _token_cache["token"]
+
+
+def token_info() -> dict:
+    """Короткий опис підключення (для сторінки «Система»)."""
+    get_access_token()
+    return {"account_id": os.environ.get("ZOOM_ACCOUNT_ID"), "expires_in_sec": int(_token_cache["expires_at"] - time.time())}
+
+
+def _retry_delay(resp: requests.Response, attempt: int) -> float:
+    try:
+        return min(float(resp.headers.get("Retry-After", "")), 10.0)
+    except ValueError:
+        return 2.0 * (attempt + 1)
+
+
+def _request(method: str, url: str, params: dict | None = None) -> requests.Response:
+    """HTTP-запит до Zoom API: повтор після 401 (новий токен), 429/5xx та збоїв мережі."""
+    resp = None
+    for attempt in range(3):
+        headers = {"Authorization": f"Bearer {get_access_token()}"}
+        try:
+            resp = requests.request(method, url, headers=headers, params=params, timeout=_HTTP_TIMEOUT)
+        except requests.RequestException as e:
+            if attempt == 2:
+                raise ZoomError(f"Zoom API недоступний: {e}", transient=True) from e
+            time.sleep(2 * (attempt + 1))
+            continue
+        if resp.status_code == 401 and attempt < 2:
+            get_access_token(force_refresh=True)
+            continue
+        if (resp.status_code == 429 or resp.status_code >= 500) and attempt < 2:
+            time.sleep(_retry_delay(resp, attempt))
+            continue
+        return resp
+    return resp
+
+
+def _api_get(path: str, params: dict | None = None) -> dict | None:
+    resp = _request("GET", f"{API_BASE}{path}", params=params or {})
+    if resp.status_code == 404:
+        return None
+    if resp.status_code >= 400:
+        raise ZoomError(
+            f"Zoom API {path} → {resp.status_code}: {resp.text[:300]}",
+            transient=resp.status_code == 429 or resp.status_code >= 500, status=resp.status_code,
+        )
+    return resp.json()
+
+
+# ── Записи ────────────────────────────────────────────────────────────────────
+
+def list_recordings(date_from: date, date_to: date | None = None) -> list[dict]:
+    """Усі зустрічі з хмарними записами за період (вікнами по 30 днів, з пагінацією)."""
+    date_to = date_to or datetime.now(timezone.utc).date()
+    meetings: list[dict] = []
+    window_start = date_from
+    while window_start <= date_to:
+        window_end = min(window_start + timedelta(days=29), date_to)
+        page_token = ""
+        while True:
+            params = {"from": window_start.isoformat(), "to": window_end.isoformat(), "page_size": 300}
+            if page_token:
+                params["next_page_token"] = page_token
+            data = _api_get(f"/users/{ZOOM_USER}/recordings", params) or {}
+            meetings.extend(data.get("meetings", []))
+            page_token = data.get("next_page_token") or ""
+            if not page_token:
+                break
+        window_start = window_end + timedelta(days=1)
+    return meetings
+
+
+def _encode_uuid(meeting_uuid: str) -> str:
+    # Zoom вимагає подвійного URL-кодування UUID (особливо з '/' або '//').
+    return quote(quote(meeting_uuid, safe=""), safe="")
+
+
+def get_meeting_recordings(meeting_uuid: str) -> dict | None:
+    """Актуальний список файлів зустрічі (свіжі download_url). None — запис видалено."""
+    return _api_get(f"/meetings/{_encode_uuid(meeting_uuid)}/recordings")
+
+
+def find_meeting_by_file_id(file_id: str, months_back: int = 6) -> dict | None:
+    """Для старих записів, де збережено лише id файлу: шукаємо зустріч у записах акаунта."""
+    today = datetime.now(timezone.utc).date()
+    for m in list_recordings(today - timedelta(days=30 * months_back), today):
+        if any(str(f.get("id")) == str(file_id) for f in m.get("recording_files", [])):
+            return m
     return None
 
 
-def _build_url_with_token(url: str, token: str) -> str:
-    """Append access_token as query param — survives CDN redirects unlike Bearer header."""
-    from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+def _int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _str(value) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _safe_share_url(url) -> str:
+    """Посилання на запис показуємо, лише якщо це справді https://*.zoom.us."""
+    if not isinstance(url, str):
+        return ""
     parsed = urlparse(url)
-    params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-    params["access_token"] = token
-    return urlunparse(parsed._replace(query=urlencode(params)))
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme == "https" and (host == "zoom.us" or host.endswith(".zoom.us")):
+        return url
+    return ""
 
 
-def _validate_file(path: Path) -> None:
-    """Verify downloaded file is real media using magic bytes — fast, no ffmpeg needed."""
-    with open(path, "rb") as f:
-        head = f.read(512)
-
-    # Detect HTML / XML error response
-    stripped = head.lstrip()
-    if stripped.startswith(b"<") or b"<html" in head.lower() or b"<?xml" in head.lower():
-        path.unlink(missing_ok=True)
-        # Try to extract error message from HTML
-        text = head.decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Zoom повернув HTML замість медіафайлу — проблема з авторизацією. Відповідь: {text[:200]}")
-
-    # Valid media magic bytes:
-    # M4A/MP4: bytes 4-7 == b'ftyp'
-    # MP3: starts with 0xFF 0xFB / 0xFF 0xF3 / 0xFF 0xF2 / ID3
-    # WAV: starts with RIFF
-    is_mp4_m4a = len(head) >= 8 and head[4:8] == b"ftyp"
-    is_mp3 = head[:3] == b"ID3" or (len(head) >= 2 and head[0] == 0xFF and head[1] in (0xFB, 0xF3, 0xF2, 0xFA))
-    is_wav = head[:4] == b"RIFF"
-    is_webm = head[:4] == b"\x1a\x45\xdf\xa3"
-
-    if not (is_mp4_m4a or is_mp3 or is_wav or is_webm):
-        path.unlink(missing_ok=True)
-        raise RuntimeError(f"Завантажений файл не є медіафайлом (перші байти: {head[:16].hex()})")
-
-
-def download_recording(download_url: str, filename: str) -> str:
-    save_path = UPLOAD_FOLDER / filename
-    token = get_access_token()
-
-    # Resolve fresh API URL if webhook URL
-    if "webhook_download" in download_url:
-        zoom_file_id = filename.replace("zoom_", "").rsplit(".", 1)[0]
-        fresh_url = _get_fresh_download_url(zoom_file_id, token)
-        if fresh_url:
-            print(f"[Download] Використовуємо API URL замість webhook URL", flush=True)
-            download_url = fresh_url
-
-    # Always use token as query param — survives CDN redirects (Bearer header is stripped)
-    url_with_token = _build_url_with_token(download_url, token)
-
-    resp = requests.get(url_with_token, stream=True, timeout=300, allow_redirects=True)
-
-    # If that fails, try Bearer header as fallback
-    if resp.status_code == 401:
-        print(f"[Download] query param не спрацював, пробуємо Bearer header", flush=True)
-        resp = requests.get(
-            download_url,
-            headers={"Authorization": f"Bearer {token}"},
-            stream=True, timeout=300, allow_redirects=True,
-        )
-
-    resp.raise_for_status()
-
-    content_type = resp.headers.get("content-type", "")
-    if "text/html" in content_type or "text/xml" in content_type:
-        raise RuntimeError(f"Zoom повернув HTML замість медіафайлу. Content-Type: {content_type}")
-
-    with open(save_path, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=65536):
-            if chunk:
-                f.write(chunk)
-
-    size = save_path.stat().st_size
-    if size < 10000:
-        save_path.unlink(missing_ok=True)
-        raise RuntimeError(f"Файл завантажився порожнім ({size} байт) — посилання застаріло або немає доступу")
-
-    print(f"[Download] Збережено: {save_path.name} | {size/1024/1024:.1f} MB", flush=True)
-
-    # Validate file is real media
-    _validate_file(save_path)
-
-    return str(save_path)
-
-
-def download_transcript_vtt(download_url: str) -> str:
-    """Download Zoom VTT transcript and convert to plain text."""
-    token = get_access_token()
-    url_with_token = _build_url_with_token(download_url, token)
-    resp = requests.get(url_with_token, timeout=60, allow_redirects=True)
-    resp.raise_for_status()
-    vtt_text = resp.text
-
-    # Parse VTT → plain text (strip timestamps and metadata)
-    lines = []
-    for line in vtt_text.splitlines():
-        line = line.strip()
-        if not line or line == "WEBVTT" or "-->" in line or line.isdigit():
-            continue
-        # Remove speaker tags like <v Speaker>
-        import re
-        line = re.sub(r"<v [^>]+>", "", line)
-        line = re.sub(r"<[^>]+>", "", line)  # remove any other HTML tags
-        if line:
-            lines.append(line)
-    return " ".join(lines)
-
-
-def parse_webhook_payload(payload: dict) -> list[dict]:
-    """
-    Extract recording info from a Zoom webhook payload.
-    Prefers TRANSCRIPT (VTT) if available — instant, no Whisper needed.
-    Falls back to M4A audio → active_speaker MP4 → any MP4.
-    """
-    recording = payload.get("payload", {}).get("object", {})
-    topic = recording.get("topic", "")
-    start_time = recording.get("start_time", "")
-    duration = recording.get("duration", 0)
-    host_email = recording.get("host_email", "")
-    host_name = _email_to_name(host_email)
-    all_files = recording.get("recording_files", [])
-    is_breakout = "breakout" in topic.lower()
-
-    # Try TRANSCRIPT first — Zoom already transcribed, just download VTT
-    transcript_file = next(
-        (f for f in all_files
-         if f.get("file_type") == "TRANSCRIPT" and f.get("status") == "completed"),
-        None
-    )
-    if transcript_file:
-        file_id = transcript_file.get("id", str(int(time.time())))
-        return [{
-            "filename": f"zoom_{file_id}.vtt",
-            "download_url": transcript_file.get("download_url", ""),
-            "file_type": "TRANSCRIPT",
-            "topic": topic,
-            "start_time": start_time,
-            "duration": duration,
-            "host_name": host_name,
-            "host_email": host_email,
-            "is_breakout": is_breakout,
-            "recording_type": "transcript",
-        }]
-
-    # Fallback: audio/video file → Whisper
-    media_files = [f for f in all_files
-                   if f.get("file_type") in ("MP4", "M4A") and f.get("status") == "completed"]
-    best = next((f for f in media_files if f.get("file_type") == "M4A"), None)
-    if not best:
-        for f in media_files:
-            if "active_speaker" in f.get("recording_type", "").lower():
-                best = f; break
-    if not best:
-        best = next((f for f in media_files if f.get("file_type") == "MP4"), None)
-    if not best:
-        return []
-
-    rec_type = best.get("recording_type", "")
-    ext = best.get("file_extension", "mp4").lower()
-    file_id = best.get("id", str(int(time.time())))
-    return [{
-        "filename": f"zoom_{file_id}.{ext}",
-        "download_url": best.get("download_url", ""),
-        "file_type": best.get("file_type", "MP4"),
+def meeting_info(obj: dict) -> dict:
+    """Нормалізує зустріч з вебхука (payload.object) або API у спільний формат (стійко до сміття)."""
+    obj = obj if isinstance(obj, dict) else {}
+    raw_files = obj.get("recording_files")
+    files = [f for f in raw_files if isinstance(f, dict)] if isinstance(raw_files, list) else []
+    ends = [e for e in (parse_iso(_str(f.get("recording_end"))) for f in files) if e]
+    start = parse_iso(_str(obj.get("start_time")))
+    duration = _int(obj.get("duration"))
+    end = max(ends) if ends else (start + timedelta(minutes=duration) if start else None)
+    topic = _str(obj.get("topic")) or "Zoom Meeting"
+    return {
+        "uuid": _str(obj.get("uuid")),
+        "meeting_id": str(obj.get("id") or ""),
         "topic": topic,
-        "start_time": start_time,
+        "start_time": _str(obj.get("start_time")),
+        "end_time": end.strftime("%Y-%m-%dT%H:%M:%SZ") if end else "",
         "duration": duration,
-        "host_name": host_name,
-        "host_email": host_email,
-        "is_breakout": is_breakout,
-        "recording_type": rec_type,
-    }]
+        "host_email": _str(obj.get("host_email")),
+        "share_url": _safe_share_url(obj.get("share_url")),
+        "is_breakout": "breakout" in topic.lower()
+                       or any("breakout" in _str(f.get("recording_type")).lower() for f in files),
+        "files": [
+            {
+                "id": str(f.get("id") or ""),
+                "file_type": _str(f.get("file_type")).upper(),
+                "file_extension": _str(f.get("file_extension")).lower(),
+                "file_size": _int(f.get("file_size")),
+                "recording_type": _str(f.get("recording_type")),
+                "status": _str(f.get("status")),
+                "download_url": _str(f.get("download_url")),
+                "recording_start": _str(f.get("recording_start")),
+            }
+            for f in files
+        ],
+    }
 
 
-def _email_to_name(email: str) -> str:
-    """Convert email to display name — used as fallback."""
+def select_best_file(files: list[dict]) -> tuple[dict | None, str | None]:
+    """
+    Що обробляти: готова транскрипція Zoom (VTT) → аудіо M4A → відео MP4
+    (active speaker → будь-яке). Повертає (file, 'transcript' | 'media' | None).
+    """
+    done = [f for f in files if f.get("status") == "completed" and f.get("download_url")]
+    transcript = next((f for f in done if f["file_type"] == "TRANSCRIPT"), None)
+    if transcript:
+        return transcript, "transcript"
+    media = [f for f in done if f["file_type"] in ("M4A", "MP4") and f.get("file_size", 0) > 100_000]
+    for predicate in (
+        lambda f: f["file_type"] == "M4A",
+        lambda f: "active_speaker" in f["recording_type"].lower(),
+        lambda f: f["file_type"] == "MP4",
+    ):
+        best = next((f for f in media if predicate(f)), None)
+        if best:
+            return best, "media"
+    return None, None
+
+
+def is_too_short(info: dict) -> bool:
+    """Випадкові записи на 0–2 хвилини (у Zoom їх багато) не аналізуємо."""
+    return info.get("duration", 0) < MIN_DURATION_MINUTES
+
+
+def file_local_name(file: dict) -> str:
+    ext = "vtt" if file["file_type"] == "TRANSCRIPT" else (file.get("file_extension") or "mp4")
+    return f"zoom_{file['id']}.{ext.lower()}"
+
+
+# ── Завантаження ──────────────────────────────────────────────────────────────
+
+def _download(url: str, stream: bool) -> requests.Response:
+    """Завантаження файлу запису. Токен у query-параметрі переживає редірект на CDN."""
+    for attempt in range(2):
+        token = get_access_token(force_refresh=attempt > 0)
+        try:
+            resp = requests.get(url, params={"access_token": token}, stream=stream,
+                                timeout=_HTTP_TIMEOUT, allow_redirects=True)
+        except requests.RequestException as e:
+            raise ZoomError(f"Не вдалося завантажити файл із Zoom: {e}", transient=True) from e
+        if resp.status_code == 401 and attempt == 0:
+            resp.close()
+            continue
+        if resp.status_code >= 400:
+            resp.close()
+            raise ZoomError(
+                f"Zoom не віддав файл ({resp.status_code})",
+                transient=resp.status_code == 429 or resp.status_code >= 500, status=resp.status_code,
+            )
+        if "text/html" in resp.headers.get("content-type", ""):
+            resp.close()
+            raise ZoomError("Zoom повернув HTML замість файлу — перевірте права застосунку (scopes)")
+        return resp
+    raise ZoomError("Zoom відхилив токен при завантаженні файлу")
+
+
+def download_transcript(download_url: str) -> str:
+    """Завантажує VTT-транскрипцію Zoom і повертає текст діалогу."""
+    resp = _download(download_url, stream=False)
+    text = transcript_from_file_bytes(resp.content, "vtt")
+    if not text.strip():
+        raise ZoomError("Транскрипція Zoom порожня")
+    return text
+
+
+def looks_like_media(head: bytes) -> bool:
+    """Перевірка «магічних байтів» медіафайлу (відсікає HTML/JSON-помилки)."""
+    if len(head) >= 8 and head[4:8] == b"ftyp":            # MP4 / M4A / MOV
+        return True
+    if head[:3] == b"ID3":                                  # MP3 з тегом
+        return True
+    if len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:  # MP3 frame sync
+        return True
+    return head[:4] in (b"RIFF", b"\x1a\x45\xdf\xa3", b"OggS", b"fLaC")  # WAV, WebM, OGG, FLAC
+
+
+def download_media(download_url: str, filename: str) -> Path:
+    """Потокове завантаження аудіо/відео у uploads/ з перевіркою, що це медіафайл."""
+    UPLOAD_FOLDER.mkdir(exist_ok=True)
+    target = UPLOAD_FOLDER / filename
+    partial = target.with_suffix(target.suffix + ".part")
+    resp = _download(download_url, stream=True)
+    size = 0
+    try:
+        with open(partial, "wb") as out:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > MAX_MEDIA_BYTES:
+                    raise ZoomError("Файл запису завеликий (понад 3 ГБ)")
+                out.write(chunk)
+    except requests.RequestException as e:
+        partial.unlink(missing_ok=True)
+        raise ZoomError(f"Обрив зʼєднання під час завантаження: {e}", transient=True) from e
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    finally:
+        resp.close()
+    with open(partial, "rb") as f:
+        head = f.read(16)
+    if size < 10_000 or not looks_like_media(head):
+        partial.unlink(missing_ok=True)
+        raise ZoomError(f"Завантажений файл не схожий на аудіо/відео ({size} байт)")
+    partial.replace(target)
+    log.info("Zoom: завантажено %s (%.1f МБ)", filename, size / 1024 / 1024)
+    return target
+
+
+# ── Вебхук ────────────────────────────────────────────────────────────────────
+
+def webhook_secret() -> str:
+    return os.environ.get("ZOOM_WEBHOOK_SECRET", "")
+
+
+def verify_webhook_signature(body: bytes, timestamp: str, signature: str) -> bool:
+    secret = webhook_secret()
+    if not (secret and timestamp and signature):
+        return False
+    message = b"v0:" + timestamp.encode() + b":" + body
+    expected = "v0=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+def url_validation_response(plain_token: str) -> dict:
+    encrypted = hmac.new(webhook_secret().encode(), plain_token.encode(), hashlib.sha256).hexdigest()
+    return {"plainToken": plain_token, "encryptedToken": encrypted}
+
+
+def email_to_name(email: str) -> str:
     if not email:
         return "Невідомо"
-    return email.split("@")[0].replace(".", " ").title()
+    return email.split("@")[0].replace(".", " ").replace("_", " ").title()

@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Помилка {{ code }} — Майстерня Аналізатор</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--bg)">
+<div style="width:100%;max-width:460px;padding:24px;text-align:center">
+  <div style="font-size:48px;margin-bottom:12px">🎭</div>
+  <div style="font-size:40px;font-weight:700;color:var(--accent)">{{ code }}</div>
+  <p style="color:var(--text-muted);margin:12px 0 24px">{{ message }}</p>
+  <a href="{{ url_for('dashboard') }}" class="btn btn-primary">На головну</a>
+</div>
+</body>
+</html>

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import score_color, score_cell, status_badge, level_badge, check_mark %}
 {% block title %}Дашборд — Майстерня Аналізатор{% endblock %}
 
 {% block content %}
@@ -6,55 +7,46 @@
   <h1>🏠 Дашборд</h1>
 </div>
 
-{# ── Stats ── #}
-{% set all_sales = records|selectattr("record_type","eq","sales")|list %}
-{% set all_lessons = records|selectattr("record_type","eq","lesson")|list %}
-{% set done_sales = all_sales|selectattr("status","eq","done")|selectattr("analysis")|list %}
-{% set done_lessons = all_lessons|selectattr("status","eq","done")|selectattr("analysis")|list %}
-
 <div class="stats-grid">
   <div class="stat-card">
     <div class="stat-label">Всього записів</div>
-    <div class="stat-value">{{ records|length }}</div>
-    <div class="stat-sub">{{ all_lessons|length }} занять · {{ all_sales|length }} продажів</div>
+    <div class="stat-value">{{ stats.total }}</div>
+    <div class="stat-sub">{{ stats.lessons_total }} занять · {{ stats.sales_total }} продажів</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">Проаналізовано</div>
-    <div class="stat-value">{{ (done_sales|length) + (done_lessons|length) }}</div>
-    <div class="stat-sub">{{ records|selectattr("status","eq","error")|list|length }} помилок</div>
+    <div class="stat-value">{{ stats.analyzed }}</div>
+    <div class="stat-sub">{{ stats.in_progress }} в обробці · {{ stats.errors }} помилок</div>
   </div>
   {% if stats.conversion is defined %}
   <div class="stat-card">
     <div class="stat-label">Конверсія продажів</div>
     <div class="stat-value" style="color:{% if stats.conversion>=60 %}var(--green){% elif stats.conversion>=35 %}var(--yellow){% else %}var(--red){% endif %}">{{ stats.conversion }}%</div>
-    <div class="stat-sub">високий шанс угоди</div>
+    <div class="stat-sub">високий шанс угоди (прогноз AI)</div>
   </div>
   {% endif %}
-  {% if done_lessons %}
-    {% set avg_l = (done_lessons|map(attribute="analysis")|map(attribute="overall_score",default=0)|sum / done_lessons|length)|round|int %}
-    <div class="stat-card">
-      <div class="stat-label">Середня оцінка занять</div>
-      <div class="stat-value" style="color:{% if avg_l>=75 %}var(--green){% elif avg_l>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ avg_l }}%</div>
-      <div class="stat-sub">по всіх тренерах</div>
-    </div>
+  {% if stats.avg_lesson_score is defined %}
+  <div class="stat-card">
+    <div class="stat-label">Середня оцінка занять</div>
+    <div class="stat-value" style="color:{{ score_color(stats.avg_lesson_score) }}">{{ stats.avg_lesson_score }}%</div>
+    <div class="stat-sub">по всіх тренерах</div>
+  </div>
   {% endif %}
 </div>
 
-{# ── Two columns: managers + trainers ── #}
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">
+{% if stats.by_person or stats.by_trainer %}
+<div class="two-columns">
   {% if stats.by_person %}
   <div class="card">
     <div class="section-title">Менеджери — чек-ліст продажів</div>
     <div style="display:flex;flex-direction:column;gap:12px">
-      {% for person, score in stats.by_person.items()|sort(attribute=1,reverse=true) %}
+      {% for person, score in stats.by_person %}
       <div>
         <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
           <span style="font-weight:500">{{ person }}</span>
-          <span style="color:{% if score>=75 %}var(--green){% elif score>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ score }}%</span>
+          <span style="color:{{ score_color(score) }}">{{ score }}%</span>
         </div>
-        <div class="score-bar-track" style="height:8px">
-          <div class="score-bar-fill" data-score="{{ score }}"></div>
-        </div>
+        <div class="score-bar-track" style="height:8px"><div class="score-bar-fill" data-score="{{ score }}"></div></div>
       </div>
       {% endfor %}
     </div>
@@ -64,21 +56,20 @@
   <div class="card">
     <div class="section-title">Тренери — оцінка занять</div>
     <div style="display:flex;flex-direction:column;gap:12px">
-      {% for person, score in stats.by_trainer.items()|sort(attribute=1,reverse=true) %}
+      {% for person, score in stats.by_trainer %}
       <div>
         <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
           <span style="font-weight:500">{{ person }}</span>
-          <span style="color:{% if score>=75 %}var(--green){% elif score>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ score }}%</span>
+          <span style="color:{{ score_color(score) }}">{{ score }}%</span>
         </div>
-        <div class="score-bar-track" style="height:8px">
-          <div class="score-bar-fill" data-score="{{ score }}"></div>
-        </div>
+        <div class="score-bar-track" style="height:8px"><div class="score-bar-fill" data-score="{{ score }}"></div></div>
       </div>
       {% endfor %}
     </div>
   </div>
   {% endif %}
 </div>
+{% endif %}
 
 <form method="get" action="{{ url_for('dashboard') }}">
   <div class="filters">
@@ -113,9 +104,8 @@
   </div>
 </form>
 
-{# ── Recent records table ── #}
 <div class="card" style="padding:0;overflow:hidden">
-  <div style="padding:16px 20px 0;display:flex;align-items:center;justify-content:space-between">
+  <div style="padding:16px 20px 0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
     <div class="section-title" style="margin:0">Всі записи</div>
     <div style="display:flex;gap:12px">
       <a href="{{ url_for('lessons_page') }}" class="btn btn-outline btn-sm">🎓 Всі заняття</a>
@@ -130,8 +120,8 @@
           <th data-sort="0">Дата та час</th>
           <th>Тип</th>
           <th data-sort="2">Імʼя</th>
-          <th data-sort="3">Шанс угоди</th>
-          <th data-sort="4">Чек-ліст</th>
+          <th data-sort="3">Шанс / залученість</th>
+          <th data-sort="4">Оцінка</th>
           <th>Потреба</th>
           <th>Презентація</th>
           <th>Заперечення</th>
@@ -141,64 +131,44 @@
       </thead>
       <tbody>
         {% for r in records %}
-        {% set a = r.get('analysis', {}) %}
+        {% set a = r.analysis or {} %}
         <tr class="clickable" data-href="{{ url_for('record_detail', record_id=r.id) }}">
-          <td style="white-space:nowrap" data-val="{{ r.record_date }}">
+          <td style="white-space:nowrap" data-val="{{ r.record_date }} {{ r.record_time }}">
             <div>{{ r.record_date }}</div>
             {% if r.record_time %}<div style="font-size:12px;color:var(--text-muted)">{{ r.record_time }}</div>{% endif %}
           </td>
           <td>
-            {% if r.record_type == 'lesson' %}
-            <span class="badge badge-blue">🎓 Заняття</span>
-            {% else %}
-            <span class="badge badge-green">💰 Продаж</span>
-            {% endif %}
+            {% if r.record_type == 'lesson' %}<span class="badge badge-blue">🎓 Заняття</span>
+            {% else %}<span class="badge badge-green">💰 Продаж</span>{% endif %}
           </td>
           <td style="font-weight:500">{{ r.person_name }}</td>
           {% if r.record_type == 'sales' and a.deal_chance %}
-            {% set pct = a.deal_chance_percent|default(0) %}
-            <td data-val="{{ pct }}">
-              {% if a.deal_chance == 'Високий' %}<span class="badge badge-green">{{ pct }}%</span>
-              {% elif a.deal_chance == 'Середній' %}<span class="badge badge-yellow">{{ pct }}%</span>
-              {% else %}<span class="badge badge-red">{{ pct }}%</span>{% endif %}
+            <td data-val="{{ a.deal_chance_percent|default(0) }}">
+              {% if a.deal_chance == 'Високий' %}<span class="badge badge-green">{{ a.deal_chance_percent|default(0) }}%</span>
+              {% elif a.deal_chance == 'Середній' %}<span class="badge badge-yellow">{{ a.deal_chance_percent|default(0) }}%</span>
+              {% else %}<span class="badge badge-red">{{ a.deal_chance_percent|default(0) }}%</span>{% endif %}
             </td>
           {% elif r.record_type == 'lesson' and a.engagement_level %}
-            {% set eng_val = 3 if a.engagement_level=='Високий' else 2 if a.engagement_level=='Середній' else 1 %}
-            <td data-val="{{ eng_val }}">
-              {% if a.engagement_level == 'Високий' %}<span class="badge badge-green">{{ a.engagement_level }}</span>
-              {% elif a.engagement_level == 'Середній' %}<span class="badge badge-yellow">{{ a.engagement_level }}</span>
-              {% else %}<span class="badge badge-red">{{ a.engagement_level }}</span>{% endif %}
-            </td>
+            <td data-val="{{ 3 if a.engagement_level=='Високий' else 2 if a.engagement_level=='Середній' else 1 }}">{{ level_badge(a.engagement_level) }}</td>
           {% else %}<td data-val="0">—</td>{% endif %}
           {% if r.record_type == 'sales' and a.checklist_score is defined %}
-            {% set s = a.checklist_score %}
+            {{ score_cell(a.checklist_score) }}
           {% elif r.record_type == 'lesson' and a.overall_score is defined %}
-            {% set s = a.overall_score %}
+            {{ score_cell(a.overall_score) }}
           {% else %}
-            {% set s = none %}
+            {{ score_cell(none) }}
           {% endif %}
-          {% if s is not none %}
-            <td data-val="{{ s }}">
-              <div class="score-bar">
-                <div class="score-bar-track"><div class="score-bar-fill" data-score="{{ s }}"></div></div>
-                <span class="score-bar-num" style="color:{% if s>=75 %}var(--green){% elif s>=50 %}var(--yellow){% else %}var(--red){% endif %}">{{ s }}%</span>
-              </div>
-            </td>
-          {% else %}<td data-val="-1">—</td>{% endif %}
-          {% if r.record_type == 'sales' %}
-            <td>{{ '✅' if a.get('need_identified', {}).get('result') else '❌' if a.need_identified is defined else '—' }}</td>
-            <td>{{ '✅' if a.get('presentation_done', {}).get('result') else '❌' if a.presentation_done is defined else '—' }}</td>
-            <td>{{ '✅' if a.get('objections_handled', {}).get('result') else '❌' if a.objections_handled is defined else '—' }}</td>
-            <td>{{ '✅' if a.get('next_step_offered', {}).get('result') else '❌' if a.next_step_offered is defined else '—' }}</td>
+          {% if r.record_type == 'sales' and a %}
+            <td>{{ check_mark(a.need_identified) }}</td>
+            <td>{{ check_mark(a.presentation_done) }}</td>
+            <td>{{ check_mark(a.objections_handled) }}</td>
+            <td>{{ check_mark(a.next_step_offered) }}</td>
+          {% elif r.record_type == 'sales' %}
+            <td>—</td><td>—</td><td>—</td><td>—</td>
           {% else %}
             <td colspan="4" style="color:var(--text-muted)">Пробне заняття</td>
           {% endif %}
-          <td>
-            {% if r.status == 'done' %}<span class="badge badge-green">Готово</span>
-            {% elif r.status in ('processing','analyzing') %}<span class="badge badge-yellow">Обробка</span>
-            {% elif r.status == 'error' %}<span class="badge badge-red">Помилка</span>
-            {% else %}<span class="badge badge-gray">{{ r.status }}</span>{% endif %}
-          </td>
+          <td>{{ status_badge(r) }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -206,7 +176,7 @@
     {% else %}
     <div style="padding:60px;text-align:center;color:var(--text-muted)">
       <div style="font-size:48px;margin-bottom:16px">📂</div>
-      <p>Записів поки немає. <a href="{{ url_for('upload') }}">Завантажте першу запис →</a></p>
+      <p>Записів поки немає. <a href="{{ url_for('upload') }}">Завантажте перший запис →</a></p>
     </div>
     {% endif %}
   </div>
