@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import threading
+import time
 
 import anthropic
 
@@ -115,6 +116,7 @@ def call_json(system: str, user: str, schema: dict, max_tokens: int = 16000) -> 
     kwargs = dict(model=model(), max_tokens=max_tokens, system=system,
                   messages=[{"role": "user", "content": user}])
     api = client()
+    started = time.monotonic()
     try:
         try:
             resp = _send(api, **kwargs, output_config={"format": {"type": "json_schema", "schema": schema}})
@@ -138,6 +140,9 @@ def call_json(system: str, user: str, schema: dict, max_tokens: int = 16000) -> 
         raise LLMError(f"Anthropic API помилка {e.status_code}: {e.message}",
                        transient=e.status_code >= 500) from e
 
+    usage = getattr(resp, "usage", None)
+    log.info("Claude %s: %.1f с, токени: вхід %s, вихід %s, stop=%s", kwargs["model"], time.monotonic() - started,
+             getattr(usage, "input_tokens", "?"), getattr(usage, "output_tokens", "?"), resp.stop_reason)
     if resp.stop_reason == "refusal":
         raise LLMError("Claude відмовився обробляти цей текст")
     if resp.stop_reason == "max_tokens":

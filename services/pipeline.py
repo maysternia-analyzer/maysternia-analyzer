@@ -11,6 +11,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -18,7 +19,7 @@ from pathlib import Path
 import requests
 
 import database as db
-from services import notify, settings, zoom
+from services import applog, notify, settings, zoom
 from services.analysis import analyze
 from services.detection import detect_type_and_name, guess_type
 from services.timeutil import parse_iso, zoom_start_to_local
@@ -350,16 +351,22 @@ def process_record(record: dict) -> str:
     """Обробляє запис, узятий з черги. Повертає done | deferred | retry | error."""
     record_id = record["id"]
     attempts = int(record.get("attempts") or 1)
-    with _heartbeat(record_id):
+    # record/job — у кожному рядку логу цієї задачі (і в журналі помилок).
+    with applog.context(record=record_id, job=record.get("job_kind") or ""), _heartbeat(record_id):
         return _process(record, record_id, attempts)
 
 
 def _process(record: dict, record_id: int, attempts: int) -> str:
+    started = time.monotonic()
+    log.info("Запис #%s: старт (%s, спроба %s, джерело %s)", record_id, record.get("job_kind"), attempts,
+             record_source(record))
     try:
         if record.get("job_kind") in ("analyze", "reanalyze") and is_valid_transcript(record.get("transcription")):
             text = strip_error_suffix(record["transcription"])
         else:
             text = obtain_transcript(record)
+            log.info("Запис #%s: транскрипція готова (%s символів, %.0f с)", record_id, len(text),
+                     time.monotonic() - started)
             # Повтори після збою аналізу не повинні заново платити за транскрипцію.
             db.update_record(record_id, transcription=text, job_kind="analyze", locked_at=db.utcnow_iso())
 
@@ -369,6 +376,7 @@ def _process(record: dict, record_id: int, attempts: int) -> str:
         record_type = (db.get_record(record_id) or record).get("record_type") or "sales"
 
         db.update_record(record_id, status="analyzing", locked_at=db.utcnow_iso())
+        log.info("Запис #%s: аналіз Claude (%s, %s символів)", record_id, record_type, len(text))
         result = analyze(record_type, text)
         extra = {}
         if record.get("job_kind") == "reanalyze":
@@ -381,7 +389,7 @@ def _process(record: dict, record_id: int, attempts: int) -> str:
             db.enqueue_record(record_id, "analyze")
         elif record.get("job_kind") != "reanalyze":  # масовий переаналіз не спамить сповіщеннями
             notify.notify_record_done(record_id)
-        log.info("Запис #%s оброблено", record_id)
+        log.info("Запис #%s оброблено за %.0f с", record_id, time.monotonic() - started)
         return "done"
 
     except Deferred as d:

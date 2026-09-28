@@ -290,6 +290,17 @@ def _schema_statements() -> list[str]:
         """CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL)""",
+        f"""CREATE TABLE IF NOT EXISTS app_logs (
+                id {_pk()},
+                created_at TEXT NOT NULL,
+                last_at TEXT NOT NULL,
+                level TEXT NOT NULL,
+                logger TEXT,
+                message TEXT,
+                details TEXT,
+                context TEXT,
+                fingerprint TEXT,
+                count INTEGER NOT NULL DEFAULT 1)""",
     ]
 
 
@@ -361,6 +372,8 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_records_status ON records(status)",
             "CREATE INDEX IF NOT EXISTS idx_records_date ON records(record_date)",
             "CREATE INDEX IF NOT EXISTS idx_records_meeting ON records(zoom_meeting_uuid)",
+            "CREATE INDEX IF NOT EXISTS idx_app_logs_last ON app_logs(last_at)",
+            "CREATE INDEX IF NOT EXISTS idx_app_logs_fingerprint ON app_logs(fingerprint)",
         ):
             cur.execute(idx_sql)
         cur.close()
@@ -874,6 +887,91 @@ def prune_webhook_logs(keep: int = 2000) -> int:
     if not row:
         return 0
     return execute("DELETE FROM webhook_log WHERE id <= ?", (row["id"],))
+
+
+# ── Журнал подій застосунку (services/applog.py) ──────────────────────────────
+
+LOG_LEVEL_GROUPS = {
+    "problems": ("WARNING", "ERROR", "CRITICAL"),
+    "errors": ("ERROR", "CRITICAL"),
+    "warnings": ("WARNING",),
+    "actions": ("INFO",),
+}
+
+
+def log_event(entry: dict, group_minutes: int = 60) -> bool:
+    """Записує подію. Повтор тієї ж помилки за group_minutes — +1 до лічильника. True — нова група."""
+    since = (datetime.now(timezone.utc) - timedelta(minutes=group_minutes)).isoformat(timespec="seconds")
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(_sql("SELECT id FROM app_logs WHERE fingerprint = ? AND last_at >= ? ORDER BY id DESC LIMIT 1"),
+                    (entry["fingerprint"], since))
+        row = cur.fetchone()
+        if row:
+            # Показуємо найсвіжіший приклад (повідомлення, traceback, контекст) і час останнього повтору.
+            cur.execute(_sql("UPDATE app_logs SET count = count + 1, last_at = ?, message = ?, details = ?, context = ? "
+                             "WHERE id = ?"),
+                        (entry["created_at"], entry["message"], entry["details"], entry["context"], row[0]))
+        else:
+            cur.execute(_sql("INSERT INTO app_logs (created_at, last_at, level, logger, message, details, context, "
+                             "fingerprint, count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)"),
+                        (entry["created_at"], entry["created_at"], entry["level"], entry["logger"], entry["message"],
+                         entry["details"], entry["context"], entry["fingerprint"]))
+        cur.close()
+    return not row
+
+
+def _log_filters(group=None, q=None, since=None) -> tuple[str, list]:
+    where, params = "", []
+    if group in LOG_LEVEL_GROUPS:
+        levels = LOG_LEVEL_GROUPS[group]
+        where += f" AND level IN ({', '.join('?' for _ in levels)})"
+        params += list(levels)
+    if q:
+        where += " AND (lower(message) LIKE ? ESCAPE '\\' OR lower(logger) LIKE ? ESCAPE '\\' " \
+                 "OR lower(context) LIKE ? ESCAPE '\\')"
+        params += [_like_pattern(q)] * 3
+    if since:
+        where += " AND last_at >= ?"
+        params.append(since)
+    return where, params
+
+
+def list_logs(group=None, q=None, since=None, limit: int = 50, offset: int = 0) -> list[dict]:
+    where, params = _log_filters(group, q, since)
+    rows = fetch_all(f"SELECT * FROM app_logs WHERE 1=1{where} ORDER BY last_at DESC, id DESC LIMIT ? OFFSET ?",
+                     (*params, int(limit), int(offset)))
+    for row in rows:
+        try:
+            row["context"] = json.loads(row.get("context") or "{}")
+        except ValueError:
+            row["context"] = {}
+    return rows
+
+
+def count_logs(group=None, q=None, since=None) -> int:
+    where, params = _log_filters(group, q, since)
+    row = fetch_one(f"SELECT COUNT(*) AS n FROM app_logs WHERE 1=1{where}", params)
+    return int(row["n"]) if row else 0
+
+
+def error_count_since(since_iso: str) -> int:
+    row = fetch_one("SELECT COALESCE(SUM(count), 0) AS n FROM app_logs WHERE level IN ('ERROR', 'CRITICAL') "
+                    "AND last_at >= ?", (since_iso,))
+    return int(row["n"]) if row else 0
+
+
+def prune_logs(days: int = 30, keep: int = 5000) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    removed = execute("DELETE FROM app_logs WHERE last_at < ?", (cutoff,))
+    row = fetch_one("SELECT id FROM app_logs ORDER BY id DESC LIMIT 1 OFFSET ?", (int(keep),))
+    if row:
+        removed += execute("DELETE FROM app_logs WHERE id <= ?", (row["id"],))
+    return removed
+
+
+def clear_logs() -> int:
+    return execute("DELETE FROM app_logs")
 
 
 # ── Користувачі ───────────────────────────────────────────────────────────────

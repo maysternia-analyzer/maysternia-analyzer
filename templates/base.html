@@ -59,6 +59,11 @@
     <a href="{{ url_for('admin_system') }}" class="sidebar-link {{ 'active' if ep == 'admin_system' }}">
       <span class="sidebar-icon">⚙️</span> Система
     </a>
+    {% set errors_24h = recent_errors() %}
+    <a href="{{ url_for('admin_logs') }}" class="sidebar-link {{ 'active' if ep == 'admin_logs' }}">
+      <span class="sidebar-icon">📜</span> Журнал
+      {% if errors_24h %}<span class="nav-badge" title="Помилок за добу">{{ errors_24h if errors_24h < 100 else '99+' }}</span>{% endif %}
+    </a>
     {% endif %}
   </nav>
 
@@ -83,6 +88,7 @@
       </div>
     </div>
     {% endif %}
+    <div class="app-version" title="{{ 'Коміт ' ~ APP_COMMIT if APP_COMMIT else 'Версія застосунку' }}">{{ APP_VERSION }}</div>
   </div>
 </aside>
 

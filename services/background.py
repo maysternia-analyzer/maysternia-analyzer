@@ -96,6 +96,28 @@ def _leader_main() -> None:
     _job_loop()
 
 
+MEMORY_WARN_MB = int(os.environ.get("MEMORY_WARN_MB", "700"))
+
+
+def memory_mb() -> int:
+    """Резидентна памʼять процесу (Linux /proc), МБ. 0 — якщо недоступно."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _check_memory() -> None:
+    used = memory_mb()
+    if used >= MEMORY_WARN_MB:
+        log.warning("Процес pid=%s використовує %s МБ памʼяті (поріг %s МБ) — ризик OOM", os.getpid(), used,
+                    MEMORY_WARN_MB)
+
+
 def _backfill() -> None:
     filled = db.backfill_light_columns()
     if filled:
@@ -148,12 +170,14 @@ def _maintenance_loop() -> None:
                 log.warning("Перервані задачі: повернуто в чергу %s, позначено помилкою %s", requeued, failed)
             db.set_setting(WORKER_STATUS_KEY, json.dumps({
                 "pid": os.getpid(), "at": db.utcnow_iso(), "active": active,
-                "concurrency": CONCURRENCY, "last_poll_at": _poll_state["at"],
+                "concurrency": CONCURRENCY, "memory_mb": memory_mb(), "last_poll_at": _poll_state["at"],
                 "last_poll_result": _poll_state["result"], "last_poll_error": _poll_state["error"],
             }, ensure_ascii=False))
             notify.send_daily_digest_if_due()
             if iteration % 60 == 0:
                 db.prune_webhook_logs()
+                db.prune_logs()
+                _check_memory()
             if iteration % 10 == 0:
                 _backfill()  # записи, дописані старою версією під час деплою
         except Exception:

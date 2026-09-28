@@ -63,6 +63,11 @@
     <label class="check-row"><input type="checkbox" name="notify_low_score" {{ 'checked' if s.notify_low_score }}> Тривоги: оцінка нижче порогу або «гарячий» лід без наступного кроку</label>
     <label class="check-row"><input type="checkbox" name="daily_digest_enabled" {{ 'checked' if s.daily_digest_enabled }}> Щоденний звіт керівнику о
       <input class="form-control" type="time" name="daily_digest_time" value="{{ s.daily_digest_time }}" style="width:120px;display:inline-block;margin-left:6px"></label>
+    <label class="check-row"><input type="checkbox" name="notify_errors" {{ 'checked' if s.notify_errors }}> Помилки системи (для адміністратора/розробника; не частіше 10 на годину)</label>
+    <div class="form-group" style="margin-top:6px">
+      <label class="form-label" for="error_chat_ids">Chat id для помилок (якщо порожньо — ті самі, що вище)</label>
+      <input class="form-control" type="text" id="error_chat_ids" name="error_chat_ids" value="{{ s.error_chat_ids }}" placeholder="123456789">
+    </div>
     {% if not public_url %}<p class="hint" style="color:var(--yellow)">Щоб у повідомленнях були посилання на записи, задайте змінну PUBLIC_BASE_URL (на Railway визначається автоматично).</p>{% endif %}
   </div>
 

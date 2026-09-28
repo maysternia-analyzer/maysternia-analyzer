@@ -29,6 +29,7 @@
 | Стек | Python 3.10+, Flask, Gunicorn, PostgreSQL (Railway) / SQLite (локально) |
 | AI | Anthropic Claude (`claude-sonnet-4-6` по умолчанию, меняется в «Налаштуваннях»), OpenAI Whisper (опционально) |
 
+Версия — файл `VERSION` (показывается внизу меню), история — [CHANGELOG](CHANGELOG.md).
 Документация: [архитектура](docs/ARCHITECTURE.md) · [деплой и эксплуатация](docs/OPERATIONS.md) ·
 [руководство пользователя](docs/USER_GUIDE.md) · [отчёт аудита 2026-09](docs/AUDIT_2026-09.md).
 
@@ -72,9 +73,9 @@ TEST_DATABASE_URL=postgresql://user:pass@localhost/test pytest -q   # те же 
 FFMPEG_TEST_PATH=/usr/bin/ffmpeg pytest tests/test_transcription.py # + реальная нарезка аудио
 ```
 
-286 тестов: БД и миграции, очередь и восстановление, Zoom API/webhook, конвейер обработки,
+307 тестов: БД и миграции, очередь и восстановление, Zoom API/webhook, конвейер обработки,
 AI-слой (схемы, ошибки, нормализация, старый формат), чек-листы и настройки, уведомления,
-командная аналитика, роли и доступ, веб-слой (CSRF, безопасность, все страницы).
+командная аналитика, роли и доступ, веб-слой (CSRF, безопасность, все страницы), журнал событий и версия.
 
 ## Структура
 
@@ -96,10 +97,13 @@ services/
   transcript_text.py    VTT/TXT → «[ГГ:ХХ:СС] Спікер: репліка», статистика спикеров
   transcription.py      Whisper + ffmpeg (сжатие, нарезка, таймкоды)
   llm.py                клиент Claude, structured outputs, классификация ошибок
+  applog.py             журнал: контекст запросов, маскирование секретов, таблица app_logs
   detection.py          тип записи и имя тренера/менеджера
   health.py, timeutil.py
 templates/, static/     интерфейс (украинский)
 tests/                  pytest
+gunicorn.conf.py        хуки gunicorn: зависшие запросы и гибель воркеров → журнал
+VERSION, CHANGELOG.md   версия (MAJOR.MINOR.PATCH) и история изменений
 create_admin.py         создать админа / сбросить пароль
 sync_zoom.py            ручная синхронизация Zoom из консоли
 ```

@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "_macros.html" import pagination %}
+{% block title %}Журнал — Майстерня Аналізатор{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>📜 Журнал подій</h1>
+  <form method="POST" action="{{ url_for('admin_logs_clear') }}" class="confirm-form" data-confirm="Видалити всі записи журналу?">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-ghost btn-sm">🗑 Очистити журнал</button>
+  </form>
+</div>
+<p class="hint" style="margin:-12px 0 16px">
+  Помилки сервера, фонової обробки й браузера, попередження та дії користувачів. Однакові помилки
+  групуються (стовпець «Разів»). Зберігаються 30 днів. Повні логи — Railway → сервіс web → Logs
+  (шукайте за <code>rid=…</code> з деталей події).
+</p>
+
+<div class="tabs">
+  {% for key, title in groups.items() %}
+  <a class="tab {{ 'active' if key == group }}" href="{{ url_for('admin_logs', group=key, q=q or None) }}">{{ title }}</a>
+  {% endfor %}
+</div>
+
+<form method="GET" class="filters" style="margin-bottom:16px">
+  <input type="hidden" name="group" value="{{ group }}">
+  <input class="form-control" type="search" name="q" value="{{ q }}" placeholder="Пошук: текст, користувач, запис…" style="max-width:360px">
+  <button type="submit" class="btn btn-outline btn-sm">Знайти</button>
+</form>
+
+{% if entries %}
+<div class="card" style="padding:0;overflow:hidden">
+  <div class="table-wrap">
+    <table class="log-table">
+      <thead><tr><th>Час</th><th>Рівень</th><th>Подія</th><th>Разів</th></tr></thead>
+      <tbody>
+      {% for e in entries %}
+        <tr class="log-{{ e.level|lower }}">
+          <td style="white-space:nowrap;font-size:13px">
+            {{ e.last_at|localtime('%d.%m %H:%M:%S') }}
+            {% if e.count > 1 %}<div style="font-size:11px;color:var(--text-muted)">з {{ e.created_at|localtime('%d.%m %H:%M') }}</div>{% endif %}
+          </td>
+          <td>
+            {% if e.level in ('ERROR', 'CRITICAL') %}<span class="badge badge-red">Помилка</span>
+            {% elif e.level == 'WARNING' %}<span class="badge badge-yellow">Увага</span>
+            {% else %}<span class="badge badge-gray">Дія</span>{% endif %}
+          </td>
+          <td class="log-message">
+            <details>
+              <summary>{{ e.message }}</summary>
+              <div class="log-meta">
+                <span>джерело: <code>{{ e.logger }}</code></span>
+                {% for k, v in e.context.items() %}
+                  {% if k == 'record' %}<span>запис: <a href="{{ url_for('record_detail', record_id=v) }}">#{{ v }}</a></span>
+                  {% else %}<span>{{ k }}: <code>{{ v }}</code></span>{% endif %}
+                {% endfor %}
+              </div>
+              {% if e.details %}<pre class="log-details">{{ e.details }}</pre>{% endif %}
+            </details>
+          </td>
+          <td style="text-align:center">{{ e.count }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{ pagination(pager) }}
+{% else %}
+<div class="card" style="text-align:center;color:var(--text-muted);padding:40px">
+  {% if q %}Нічого не знайдено.{% elif group in ('problems', 'errors') %}✅ Помилок немає.{% else %}Подій ще немає.{% endif %}
+</div>
+{% endif %}
+{% endblock %}

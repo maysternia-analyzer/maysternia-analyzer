@@ -50,7 +50,9 @@ def is_configured() -> bool:
 # ── OAuth ─────────────────────────────────────────────────────────────────────
 
 _token_lock = threading.Lock()
-_token_cache = {"token": None, "expires_at": 0.0}
+_token_cache = {"token": None, "expires_at": 0.0, "scopes": ""}
+# Із цим доступом застосунок бачить записи ВСІХ організаторів акаунта, а не лише власника застосунку.
+ACCOUNT_RECORDINGS_SCOPES = {"cloud_recording:read:list_account_recordings:admin", "recording:read:admin"}
 
 
 def get_access_token(force_refresh: bool = False) -> str:
@@ -76,6 +78,7 @@ def get_access_token(force_refresh: bool = False) -> str:
                 transient=resp.status_code >= 500, status=resp.status_code,
             )
         data = resp.json()
+        _token_cache["scopes"] = data.get("scope") or ""
         _token_cache["token"] = data["access_token"]
         _token_cache["expires_at"] = time.time() + int(data.get("expires_in", 3600))
         return _token_cache["token"]
@@ -130,9 +133,26 @@ def _api_get(path: str, params: dict | None = None) -> dict | None:
 
 # ── Записи ────────────────────────────────────────────────────────────────────
 
+def token_scopes() -> set[str]:
+    """Дозволи (scopes) застосунку Zoom з OAuth-токена."""
+    get_access_token()
+    return set(_token_cache.get("scopes", "").split())
+
+
+def account_wide() -> bool:
+    """Чи бачить застосунок записи всіх користувачів акаунта (а не лише власника застосунку)."""
+    if ZOOM_USER != "me":  # явно вказаний ZOOM_USER_ID — працюємо лише з ним
+        return False
+    try:
+        return bool(token_scopes() & ACCOUNT_RECORDINGS_SCOPES)
+    except ZoomError:
+        return False
+
+
 def list_recordings(date_from: date, date_to: date | None = None) -> list[dict]:
     """Усі зустрічі з хмарними записами за період (вікнами по 30 днів, з пагінацією)."""
     date_to = date_to or datetime.now(timezone.utc).date()
+    path = "/accounts/me/recordings" if account_wide() else f"/users/{ZOOM_USER}/recordings"
     meetings: list[dict] = []
     window_start = date_from
     while window_start <= date_to:
@@ -142,7 +162,7 @@ def list_recordings(date_from: date, date_to: date | None = None) -> list[dict]:
             params = {"from": window_start.isoformat(), "to": window_end.isoformat(), "page_size": 300}
             if page_token:
                 params["next_page_token"] = page_token
-            data = _api_get(f"/users/{ZOOM_USER}/recordings", params) or {}
+            data = _api_get(path, params) or {}
             meetings.extend(data.get("meetings", []))
             page_token = data.get("next_page_token") or ""
             if not page_token:

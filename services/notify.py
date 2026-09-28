@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import socket
+import threading
 import time
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
@@ -18,7 +19,7 @@ from urllib.parse import urlparse
 import requests
 
 import database as db
-from services import settings, team
+from services import settings, team, version
 from services.analysis import main_score
 from services.timeutil import LOCAL_TZ
 
@@ -78,6 +79,34 @@ def send_telegram(text: str, chat_ids: list[str] | None = None) -> list[str]:
     for error in errors:
         log.warning("Telegram: %s", error)
     return errors
+
+
+_error_alerts: list[float] = []
+_error_alerts_lock = threading.Lock()
+ERROR_ALERTS_PER_HOUR = 10
+
+
+def alert_error(entry: dict) -> None:
+    """Нова (не повторна) помилка з журналу → Telegram адміну. Не частіше 10 на годину на процес."""
+    if not settings.get("notify_errors"):
+        return
+    now = time.monotonic()
+    with _error_alerts_lock:
+        _error_alerts[:] = [t for t in _error_alerts if now - t < 3600]
+        if len(_error_alerts) >= ERROR_ALERTS_PER_HOUR:
+            return
+        _error_alerts.append(now)
+    try:
+        ctx = json.loads(entry.get("context") or "{}")
+    except ValueError:
+        ctx = {}
+    where = " · ".join(f"{k}: {v}" for k, v in ctx.items() if k in ("req", "user", "record", "job"))
+    base = public_base_url()
+    link = f'\n<a href="{base}/admin/logs?group=errors">Відкрити журнал</a>' if base else ""
+    text = (f"🛑 <b>Помилка</b> · Майстерня Аналізатор {version.label()}\n"
+            f"{_esc(entry.get('message', ''))[:600]}"
+            + (f"\n<i>{_esc(where)[:300]}</i>" if where else "") + link)
+    send_telegram(text, settings.error_chat_ids())
 
 
 def _esc(value) -> str:

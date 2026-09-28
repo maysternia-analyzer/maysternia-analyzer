@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -25,12 +25,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+from services import applog  # noqa: E402  — раніше за інші модулі, щоб усі логи йшли в журнал
 
-from flask import (Flask, Response, abort, flash, jsonify, redirect, render_template, request,  # noqa: E402
+applog.setup()
+
+from flask import (Flask, Response, abort, flash, g, jsonify, redirect, render_template, request,  # noqa: E402
                    send_from_directory, url_for)
 from flask_login import (LoginManager, UserMixin, current_user, login_required,  # noqa: E402
                          login_url, login_user, logout_user)
@@ -45,6 +44,7 @@ from security import (LoginRateLimiter, csrf_protect, csrf_token, is_safe_next_u
 from services import (background, checklists, coaching, health, notify, pipeline, team,  # noqa: E402
                       transcription, zoom)
 from services import settings as app_settings  # noqa: E402
+from services import version  # noqa: E402
 from services.analysis import (LESSON_CRITERIA, SALES_CRITERIA, main_score,  # noqa: E402
                                present_criteria)
 from services.insights import generate_insights  # noqa: E402
@@ -54,6 +54,10 @@ from services.transcript_text import (is_valid_transcript, split_timecode, strip
                                      talk_stats, transcript_from_file_bytes)
 
 log = logging.getLogger("app")
+audit = logging.getLogger(applog.AUDIT)
+client_log = logging.getLogger(applog.CLIENT)
+if applog.db_handler():
+    applog.db_handler().on_new_error = notify.alert_error  # нова помилка → Telegram (якщо ввімкнено)
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_FOLDER = BASE_DIR / "uploads"
@@ -71,6 +75,8 @@ ROLE_LABELS = {"admin": "Адміністратор", "viewer": "Керівни�
 PER_PAGE = 50
 
 db.init_db()
+log.info("Майстерня Аналізатор %s%s запускається (pid %s)", version.label(),
+         f" · коміт {version.COMMIT}" if version.COMMIT else "", os.getpid())
 
 app = Flask(__name__)
 # Railway працює за проксі: беремо реальні схему (https) та IP клієнта із заголовків.
@@ -216,6 +222,73 @@ def _contains_nul(value) -> bool:
     return False
 
 
+SLOW_REQUEST_SECONDS = 3.0
+
+# Дії користувачів, що пишуться в журнал (решта — за назвою endpoint).
+_ACTION_LABELS = {
+    "setup": "Створення першого адміністратора", "login": "Вхід у систему",
+    "admin_create_user": "Створення користувача", "admin_toggle_user": "Блокування/розблокування користувача",
+    "admin_change_role": "Зміна ролі користувача", "admin_change_person": "Привʼязка користувача до людини",
+    "admin_rename_person": "Перейменування людини", "admin_delete_user": "Видалення користувача",
+    "admin_change_password": "Зміна пароля користувача", "admin_system_check": "Перевірка інтеграцій",
+    "admin_system_poll": "Ручна перевірка Zoom", "admin_settings": "Зміна налаштувань",
+    "admin_test_telegram": "Тест Telegram", "admin_test_webhook": "Тест вебхука",
+    "admin_digest_now": "Надсилання щоденного звіту вручну", "admin_checklist": "Зміна чек-листа",
+    "admin_checklist_reset": "Скидання чек-листа до стандартного", "admin_checklist_reanalyze": "Масовий переаналіз",
+    "admin_logs_clear": "Очищення журналу", "person_coach": "Генерація AI-плану розвитку",
+    "generate_analytics": "Генерація AI-аналітики", "upload": "Завантаження запису",
+    "save_sale_result": "Результат продажу", "update_meta": "Редагування запису", "save_comment": "Коментар керівника",
+    "reanalyze": "Повторний аналіз запису", "delete_record": "Видалення запису",
+}
+_AUDIT_SKIP = {"logout", "zoom_webhook", "client_error", "static", "healthz"}
+
+
+@app.before_request
+def _bind_log_context():
+    if request.endpoint == "static":
+        return
+    g.request_started = time.monotonic()
+    g.request_id = uuid.uuid4().hex[:8]
+    g.log_token = applog.bind(rid=g.request_id, req=f"{request.method} {request.path[:150]}")
+    if current_user.is_authenticated:
+        applog.bind(user=current_user.email)
+
+
+@app.teardown_request
+def _unbind_log_context(_error=None):
+    token = g.pop("log_token", None)
+    if token is not None:
+        applog.reset(token)
+
+
+def _action_label() -> str:
+    label = _ACTION_LABELS.get(request.endpoint, request.endpoint or request.path)
+    view_args = request.view_args or {}
+    if "record_id" in view_args:
+        label += f" #{view_args['record_id']}"
+    elif "user_id" in view_args:
+        label += f" (користувач #{view_args['user_id']})"
+    elif "kind" in view_args:
+        label += f" ({view_args['kind']})"
+    return label
+
+
+@app.after_request
+def _log_request(response):
+    if request.endpoint == "static" or "request_started" not in g:
+        return response
+    response.headers.setdefault("X-Request-ID", g.request_id)
+    elapsed = time.monotonic() - g.request_started
+    if request.method == "GET" and elapsed > SLOW_REQUEST_SECONDS and request.endpoint != "serve_upload":
+        log.warning("Повільна сторінка: %s — %.1f с", request.path, elapsed)
+    if response.status_code == 403:
+        log.info("Доступ заборонено: %s %s", request.method, request.path)
+    if (request.method == "POST" and response.status_code < 400 and request.endpoint not in _AUDIT_SKIP
+            and current_user.is_authenticated):
+        audit.info("%s: %s", current_user.email, _action_label())
+    return response
+
+
 @app.before_request
 def _reject_nul_bytes():
     # PostgreSQL не приймає рядки з NUL — відповідаємо 400, а не 500.
@@ -260,7 +333,27 @@ def _security_headers(response):
 def _template_globals():
     return {"csrf_token": csrf_token, "LESSON_CRITERIA": LESSON_CRITERIA, "SALES_CRITERIA": SALES_CRITERIA,
             "now_utc": db.utcnow_iso(), "main_score": main_score, "checklist_summary": checklist_summary,
-            "ROLE_LABELS": ROLE_LABELS}
+            "ROLE_LABELS": ROLE_LABELS, "APP_VERSION": version.label(), "APP_COMMIT": version.COMMIT,
+            "recent_errors": recent_error_count}
+
+
+_error_badge = {"at": 0.0, "value": 0}
+_error_badge_lock = threading.Lock()
+
+
+def recent_error_count() -> int:
+    """Кількість помилок за добу для значка в меню адміна (кеш 60 с, щоб не робити запит на кожну сторінку)."""
+    with _error_badge_lock:
+        if time.monotonic() - _error_badge["at"] < 60:
+            return _error_badge["value"]
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+    try:
+        value = db.error_count_since(since)
+    except Exception:
+        value = 0
+    with _error_badge_lock:
+        _error_badge.update(at=time.monotonic(), value=value)
+    return value
 
 
 def checklist_summary(analysis, kind: str) -> tuple[int, int]:
@@ -340,7 +433,7 @@ def _record_or_404(record_id: int) -> dict:
     return record
 
 
-_PAGER_KEYS = ("type", "person", "manager", "trainer", "date_from", "date_to", "q", "period", "name")
+_PAGER_KEYS = ("type", "person", "manager", "trainer", "date_from", "date_to", "q", "period", "name", "group")
 
 
 def paginate(items: list, per_page: int = PER_PAGE) -> tuple[list, dict]:
@@ -431,7 +524,7 @@ def healthz():
     except Exception as e:
         log.error("healthz: БД недоступна: %s", e)
         return jsonify(ok=False, db=False), 503
-    return jsonify(ok=True, db=True)
+    return jsonify(ok=True, db=True, version=version.VERSION, commit=version.COMMIT)
 
 
 # ── Вхід / налаштування ───────────────────────────────────────────────────────
@@ -479,6 +572,7 @@ def login():
         limiter_key, email_key = f"{request.remote_addr}|{email}", f"email:{email}"
         if not login_limiter.allowed(limiter_key) or not email_limiter.allowed(email_key):
             error, status = "Забагато невдалих спроб. Спробуйте через 15 хвилин.", 429
+            log.warning("Вхід заблоковано лімітом спроб: %s з %s", email[:100], request.remote_addr)
         else:
             user_data = db.get_user_by_email(email)
             # Хеш перевіряємо завжди: час відповіді не видає, чи існує такий email.
@@ -495,6 +589,7 @@ def login():
                 error, status = "Акаунт заблоковано — зверніться до адміністратора", 403
             else:
                 error, status = "Невірний email або пароль", 401
+            audit.info("Невдалий вхід: %s (%s)", email[:100], "акаунт заблоковано" if status == 403 else "невірний пароль")
     return render_template("login.html", error=error, email=request.form.get("email", "")), status
 
 
@@ -502,6 +597,8 @@ def login():
 def logout():
     # Вихід лише через POST з CSRF-токеном (GET-посилання з чужого сайту не розлогінить).
     if request.method == "POST":
+        if current_user.is_authenticated:
+            audit.info("%s: Вихід із системи", current_user.email)
         logout_user()
     return redirect(url_for("login"))
 
@@ -638,7 +735,67 @@ def admin_system():
         webhook_logs=db.get_webhook_logs(50),
         webhook_url=url_for("zoom_webhook", _external=True),
         min_duration=app_settings.get("zoom_min_duration_minutes"),
+        errors_24h=recent_error_count(),
     )
+
+
+LOG_GROUPS = {"problems": "Помилки й попередження", "errors": "Помилки", "warnings": "Попередження",
+              "actions": "Дії користувачів", "all": "Усе"}
+
+
+@app.route("/admin/logs")
+@admin_required
+def admin_logs():
+    group = request.args.get("group", "problems")
+    group = group if group in LOG_GROUPS else "problems"
+    q = request.args.get("q", "").strip()[:200]
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    total = db.count_logs(group, q)
+    pages = max(1, math.ceil(total / PER_PAGE))
+    page = min(page, pages)
+    entries = db.list_logs(group, q, limit=PER_PAGE, offset=(page - 1) * PER_PAGE)
+    args = {"group": group, "q": q} if q else {"group": group}
+    pager = {"page": page, "pages": pages, "total": total,
+             "prev_url": url_for("admin_logs", page=page - 1, **args) if page > 1 else None,
+             "next_url": url_for("admin_logs", page=page + 1, **args) if page < pages else None}
+    return render_template("logs.html", entries=entries, pager=pager, group=group, groups=LOG_GROUPS, q=q)
+
+
+@app.route("/admin/logs/clear", methods=["POST"])
+@admin_required
+def admin_logs_clear():
+    removed = db.clear_logs()
+    with _error_badge_lock:
+        _error_badge.update(at=0.0, value=0)
+    flash(f"Журнал очищено ({removed} {_plural_filter(removed, 'подія', 'події', 'подій')})", "success")
+    return redirect(url_for("admin_logs"))
+
+
+_client_errors: dict[int, list[float]] = defaultdict(list)
+_client_errors_lock = threading.Lock()
+
+
+@app.route("/api/client-error", methods=["POST"])
+@login_required
+def client_error():
+    """Помилки JavaScript зі сторінок — у журнал (не більше 20 за 10 хвилин від користувача)."""
+    now = time.monotonic()
+    with _client_errors_lock:
+        recent = [t for t in _client_errors[current_user.id] if now - t < 600]
+        allowed = len(recent) < 20
+        _client_errors[current_user.id] = recent + ([now] if allowed else [])
+    if allowed:
+        data = request.get_json(silent=True) or {}
+        message = str(data.get("message") or "невідома помилка")[:500]
+        details = (f"Сторінка: {str(data.get('url') or '')[:500]}\n"
+                   f"Джерело: {str(data.get('source') or '')[:300]}:{data.get('line')}:{data.get('column')}\n"
+                   f"Браузер: {request.user_agent.string[:300]}\n\n{str(data.get('stack') or '')[:4000]}")
+        # Без аргументів форматування: повідомлення входить у ключ групування (різні помилки — різні групи).
+        client_log.warning(f"JS: {message}", extra={"details": details})
+    return jsonify(ok=True)
 
 
 @app.route("/admin/system/check", methods=["POST"])
@@ -670,8 +827,9 @@ def admin_system_poll():
 
 _TEXT_SETTINGS = ("company_context", "anthropic_model", "low_score_threshold", "telegram_bot_token",
                   "telegram_chat_ids", "daily_digest_time", "webhook_url", "webhook_secret",
-                  "zoom_min_duration_minutes", "zoom_transcript_wait_minutes")
-_BOOL_SETTINGS = ("notify_on_done", "notify_low_score", "daily_digest_enabled", "manager_can_see_transcript")
+                  "zoom_min_duration_minutes", "zoom_transcript_wait_minutes", "error_chat_ids")
+_BOOL_SETTINGS = ("notify_on_done", "notify_low_score", "daily_digest_enabled", "manager_can_see_transcript",
+                  "notify_errors")
 
 
 @app.route("/admin/settings", methods=["GET", "POST"])

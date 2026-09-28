@@ -21,6 +21,8 @@
       <tr><td>Whisper (OpenAI)</td><td>{{ '✅ ключ задано' if config.openai else '⚠️ немає ключа — лише VTT/TXT' }}</td></tr>
       <tr><td>ffmpeg</td><td>{{ config.ffmpeg or '❌ не знайдено' }}</td></tr>
       <tr><td>База даних</td><td>{{ config.database }}</td></tr>
+      <tr><td>Версія</td><td><strong>{{ APP_VERSION }}</strong>{% if APP_COMMIT %} · коміт <code>{{ APP_COMMIT }}</code>{% endif %}</td></tr>
+      <tr><td>Помилки за добу</td><td>{% if errors_24h %}<a href="{{ url_for('admin_logs', group='errors') }}" style="color:var(--red)">❗ {{ errors_24h }} — відкрити журнал</a>{% else %}✅ немає{% endif %}</td></tr>
       <tr><td>Ключ сесій</td><td>{% if secret_source == 'env' %}✅ SECRET_KEY зі змінних{% else %}⚠️ згенерований (SECRET_KEY не задано або публічно відомий){% endif %}</td></tr>
     </table>
   </div>
@@ -32,6 +34,7 @@
       <tr><td>Останній heartbeat</td><td>{{ worker.at|localtime('%Y-%m-%d %H:%M:%S') }} (pid {{ worker.pid }})</td></tr>
       <tr><td>Зараз обробляються</td><td>{% if worker.active %}{% for rid in worker.active %}<a href="{{ url_for('record_detail', record_id=rid) }}">#{{ rid }}</a> {% endfor %}{% else %}—{% endif %}</td></tr>
       <tr><td>Паралельних задач</td><td>{{ worker.concurrency }}</td></tr>
+      {% if worker.memory_mb %}<tr><td>Памʼять процесу</td><td>{{ worker.memory_mb }} МБ</td></tr>{% endif %}
       <tr><td>Остання перевірка Zoom</td><td>{{ worker.last_poll_at|localtime if worker.last_poll_at else '—' }}
         {% if worker.last_poll_error %}<div style="color:var(--red);font-size:12px">{{ worker.last_poll_error }}</div>
         {% elif worker.last_poll_result %}<div style="color:var(--text-muted);font-size:12px">{{ worker.last_poll_result }}</div>{% endif %}</td></tr>

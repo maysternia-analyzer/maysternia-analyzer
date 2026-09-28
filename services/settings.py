@@ -54,6 +54,8 @@ FIELDS = {
     "zoom_min_duration_minutes": ("int:0:600", _env_int("ZOOM_MIN_DURATION_MINUTES", 3)),
     "zoom_transcript_wait_minutes": ("int:0:1440", _env_int("ZOOM_TRANSCRIPT_WAIT_MINUTES", 180)),
     "manager_can_see_transcript": ("bool", True),
+    "notify_errors": ("bool", False),
+    "error_chat_ids": ("chat_ids", ""),
 }
 
 _lock = threading.Lock()
@@ -166,6 +168,11 @@ def update(changes: dict) -> dict:
 
 def chat_ids() -> list[str]:
     return [c.strip() for c in (get("telegram_chat_ids") or "").split(",") if c.strip()]
+
+
+def error_chat_ids() -> list[str]:
+    """Куди слати помилки системи: окремі chat id або, якщо не задані, основні."""
+    return [c.strip() for c in (get("error_chat_ids") or "").split(",") if c.strip()] or chat_ids()
 
 
 def mask(secret: str) -> str:

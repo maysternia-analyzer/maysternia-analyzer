@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import io
 import json
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +23,8 @@ def _record(**kwargs):
 
 def test_healthz(client):
     resp = client.get("/healthz")
-    assert resp.status_code == 200 and resp.json == {"ok": True, "db": True}
+    assert resp.status_code == 200 and resp.json["ok"] is True and resp.json["db"] is True
+    assert resp.json["version"] == (Path(__file__).resolve().parent.parent / "VERSION").read_text().strip()
 
 
 @pytest.mark.parametrize("path", ["/debug/zoom-state", "/debug/zoom-account", "/debug/ffmpeg-check",

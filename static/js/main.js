@@ -1,6 +1,34 @@
 // ── API helper (CSRF + JSON) ─────────────────────────────────────────────────
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || "";
 
+// ── Помилки JavaScript → журнал на сервері (не більше 5 зі сторінки) ─────────
+(() => {
+  if (!CSRF_TOKEN || !document.querySelector(".sidebar")) return;   // лише для авторизованих сторінок
+  let sent = 0;
+  const report = (message, source, line, column, stack) => {
+    if (sent >= 5) return;
+    sent += 1;
+    try {
+      fetch("/api/client-error", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": CSRF_TOKEN },
+        credentials: "same-origin",
+        keepalive: true,
+        body: JSON.stringify({ message: String(message || "").slice(0, 500), source, line, column,
+                               stack: String(stack || "").slice(0, 4000), url: location.href }),
+      }).catch(() => {});
+    } catch (_) { /* журнал не повинен ламати сторінку */ }
+  };
+  window.addEventListener("error", (e) => {
+    if (!e.message) return;   // помилка завантаження картинки/скрипта — без тексту
+    report(e.message, e.filename, e.lineno, e.colno, e.error && e.error.stack);
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e.reason;
+    report("Promise: " + (r && r.message ? r.message : String(r)), "", 0, 0, r && r.stack);
+  });
+})();
+
 async function apiPost(url, data = {}) {
   try {
     const res = await fetch(url, {

@@ -38,12 +38,18 @@ import database as db  # noqa: E402
 
 db.init_db()
 
-TABLES = ("records", "users", "insights_cache", "zoom_processed", "webhook_log", "app_settings")
+TABLES = ("records", "users", "insights_cache", "zoom_processed", "webhook_log", "app_settings", "app_logs")
 
 
 @pytest.fixture(autouse=True)
 def clean_db():
     """Кожен тест стартує з порожніх таблиць (ключ сесій зберігаємо)."""
+    from services import applog
+    handler = applog.db_handler()
+    if handler:  # у тестах журнал пишемо одразу (без фонового потоку) — результат детермінований
+        handler.sync = True
+        handler.queue.clear()
+        handler.on_new_error = None
     for table in TABLES:
         if table == "app_settings":
             db.execute("DELETE FROM app_settings WHERE key != 'flask_secret_key'")
@@ -71,6 +77,8 @@ def flask_app():
     app_module.login_limiter._failures.clear()
     app_module.email_limiter._failures.clear()
     app_module._bad_signature_logged_at[0] = 0.0
+    app_module._error_badge.update(at=0.0, value=0)
+    app_module._client_errors.clear()
     return app_module.app
 
 

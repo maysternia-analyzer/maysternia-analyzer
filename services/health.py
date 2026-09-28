@@ -1,7 +1,7 @@
 """Перевірка інтеграцій для сторінки «Система» (лише для адміністратора)."""
 import os
 
-from services import llm, transcription, zoom
+from services import llm, transcription, version, zoom
 
 
 def config_summary() -> dict:
@@ -13,6 +13,7 @@ def config_summary() -> dict:
         "openai": transcription.is_configured(),
         "ffmpeg": transcription.ffmpeg_path(),
         "database": "PostgreSQL" if os.environ.get("DATABASE_URL") else "SQLite",
+        "version": version.label(),
     }
 
 
@@ -25,8 +26,16 @@ def _check(fn) -> dict:
 
 def check_zoom() -> dict:
     def run():
+        from datetime import datetime, timedelta, timezone
         zoom.get_access_token(force_refresh=True)
-        return "OAuth-токен отримано"
+        today = datetime.now(timezone.utc).date()
+        meetings = zoom.list_recordings(today - timedelta(days=90), today)
+        last = max((m.get("start_time") or "" for m in meetings), default="")
+        scope = ("записи всіх організаторів акаунта" if zoom.account_wide() else
+                 "лише записи власника Zoom-застосунку (щоб бачити всіх організаторів, додайте застосунку "
+                 "scope cloud_recording:read:list_account_recordings:admin)")
+        latest = f"останній запис {last[:10]}" if last else "за 90 днів хмарних записів немає"
+        return f"OAuth-токен отримано; доступ: {scope}; записів за 90 днів: {len(meetings)}, {latest}"
     return _check(run) if zoom.is_configured() else {"ok": False, "detail": "ZOOM_* не задані"}
 
 
